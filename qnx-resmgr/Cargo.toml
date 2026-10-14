@@ -1,0 +1,13 @@
+[package]
+name = "qnx-resmgr"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "QNX resource manager interfaces and message layouts"
+
+[lib]
+name = "qnx_resmgr"
+
+[dependencies]
+qnx-errno = { path = "../qnx-errno" }
+qnx-msg = { path = "../qnx-msg" }

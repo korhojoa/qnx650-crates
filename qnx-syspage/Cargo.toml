@@ -1,0 +1,11 @@
+[package]
+name = "qnx-syspage"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "CPU and memory information from the QNX system page"
+
+[lib]
+name = "qnx_syspage"
+
+[dependencies]

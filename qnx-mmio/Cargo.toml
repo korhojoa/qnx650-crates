@@ -1,0 +1,12 @@
+[package]
+name = "qnx-mmio"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Device memory mappings and register access"
+
+[lib]
+name = "qnx_mmio"
+
+[dependencies]
+qnx-errno = { path = "../qnx-errno" }

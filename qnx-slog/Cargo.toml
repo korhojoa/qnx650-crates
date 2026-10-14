@@ -1,0 +1,18 @@
+[package]
+name = "qnx-slog"
+version = "0.3.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Slog logging for libraries and programs"
+
+
+[lib]
+name = "qnx_slog"
+
+[dependencies]
+qnx-dl = { path = "../qnx-dl" }
+qnx-time = { path = "../qnx-time" }
+
+[features]
+static-slogf = []

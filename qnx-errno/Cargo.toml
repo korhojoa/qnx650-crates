@@ -1,0 +1,9 @@
+[package]
+name = "qnx-errno"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Error number access without the Rust standard library"
+
+[lib]
+name = "qnx_errno"

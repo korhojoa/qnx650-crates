@@ -1,0 +1,12 @@
+[package]
+name = "qnx-msg"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Neutrino messages, pulses, channels, and interrupt events"
+
+[lib]
+name = "qnx_msg"
+
+[dependencies]
+qnx-errno = { path = "../qnx-errno" }

@@ -1,0 +1,17 @@
+[package]
+name = "hidkbm-ring"
+version = "0.2.0"
+edition = "2021"
+description = "Shared HID event rings and PPS notifications"
+license = "Apache-2.0"
+
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["shm"]
+shm = ["dep:qnx-shm"]
+
+[dependencies]
+qnx-shm = { path = "../qnx-shm", optional = true }

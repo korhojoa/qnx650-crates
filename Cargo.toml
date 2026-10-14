@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "hidkbm-ring",
+    "joined-worker",
+    "oldabi-entry",
+    "qnx-dl",
+    "qnx-errno",
+    "qnx-mmio",
+    "qnx-msg",
+    "qnx-procfs",
+    "qnx-qsa",
+    "qnx-resmgr",
+    "qnx-shm",
+    "qnx-slog",
+    "qnx-stop",
+    "qnx-syslog",
+    "qnx-syspage",
+    "qnx-time",
+    "qnx-usbdi",
+]

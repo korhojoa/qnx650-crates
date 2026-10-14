@@ -1,0 +1,10 @@
+[package]
+name = "qnx-usbdi"
+version = "0.2.0"
+edition = "2021"
+description = "USB connection, control, bulk, and interrupt transfers"
+license = "Apache-2.0"
+build = "build.rs"
+
+[dependencies]
+qnx-stop = { path = "../qnx-stop" }

@@ -1,0 +1,12 @@
+[package]
+name = "joined-worker"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Worker shutdown, wake paths, and thread joins"
+
+[lib]
+name = "joined_worker"
+
+[dependencies]
+qnx-syslog = { path = "../qnx-syslog" }
