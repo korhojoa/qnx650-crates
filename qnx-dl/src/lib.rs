@@ -4,7 +4,10 @@
 //! the real function through `RTLD_NEXT`), and programs that load a vendor
 //! library with `dlopen`.
 #![no_std]
+#[cfg(feature = "alloc")]
+extern crate alloc;
 use core::ffi::{c_char, c_int, c_void, CStr};
+use core::fmt;
 use core::marker::PhantomData;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -69,19 +72,58 @@ pub unsafe fn symbol<F: Copy>(handle: *mut c_void, name: &CStr) -> Option<F> {
     // that the caller says matches the symbol.
     Some(unsafe { core::mem::transmute_copy::<*mut c_void, F>(&p) })
 }
-#[must_use]
-pub fn dl_error() -> &'static str {
-    // SAFETY: `dlerror` returns null or a NUL-terminated string.
-    // The string stays valid until the next dl call on this thread.
-    // This call reads the text before the next dl call.
-    unsafe {
-        let e = dlerror();
-        if e.is_null() {
-            ""
-        } else {
-            CStr::from_ptr(e).to_str().unwrap_or("(non-UTF-8 dlerror)")
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorBufferTooSmall {
+    pub required: usize,
+}
+impl fmt::Display for ErrorBufferTooSmall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "linker error buffer requires {} bytes",
+            self.required
+        )
     }
+}
+impl core::error::Error for ErrorBufferTooSmall {}
+fn with_error_text<T>(copy: impl FnOnce(&CStr) -> T) -> T {
+    // SAFETY: The linker supplies a terminated string until the next linker call.
+    // Both callers copy the text without any subsequent linker call.
+    let pointer = unsafe { dlerror() };
+    let text = if pointer.is_null() {
+        c""
+    } else {
+        // SAFETY: The non-null pointer identifies the current linker error.
+        unsafe { CStr::from_ptr(pointer) }
+    };
+    copy(text)
+}
+fn copy_error<'a>(text: &CStr, buffer: &'a mut [u8]) -> Result<&'a CStr, ErrorBufferTooSmall> {
+    let bytes = text.to_bytes_with_nul();
+    if buffer.len() < bytes.len() {
+        return Err(ErrorBufferTooSmall {
+            required: bytes.len(),
+        });
+    }
+    let copied = &mut buffer[..bytes.len()];
+    copied.copy_from_slice(bytes);
+    // SAFETY: The complete bytes and terminator came from a valid C string.
+    Ok(unsafe { CStr::from_bytes_with_nul_unchecked(copied) })
+}
+/// # Errors
+/// The error reports required capacity, including the NUL terminator.
+/// The destination remains unchanged when capacity is insufficient.
+pub fn dl_error_into(buffer: &mut [u8]) -> Result<&CStr, ErrorBufferTooSmall> {
+    with_error_text(|text| copy_error(text, buffer))
+}
+#[cfg(feature = "alloc")]
+fn own_error(text: &CStr) -> alloc::string::String {
+    text.to_string_lossy().into_owned()
+}
+#[cfg(feature = "alloc")]
+#[must_use]
+pub fn dl_error() -> alloc::string::String {
+    with_error_text(own_error)
 }
 pub struct Next {
     name: &'static CStr,
@@ -145,6 +187,7 @@ impl<F: Copy> NextFn<F> {
 unsafe impl<F> Sync for NextFn<F> {}
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     type StrlenFn = unsafe extern "C" fn(*const c_char) -> usize;
     #[test]
@@ -171,6 +214,67 @@ mod tests {
         // SAFETY: a NUL-terminated string.
         assert_eq!(unsafe { f(c"ab".as_ptr()) }, 2);
         assert_eq!(STRLEN.name(), c"strlen");
+    }
+    #[test]
+    fn caller_buffer_survives_subsequent_linker_calls() {
+        assert!(sym_default(c"qnx_dl_missing_first").is_null());
+        let mut buffer = [0u8; 4096];
+        let first = dl_error_into(&mut buffer).unwrap();
+        assert!(!first.is_empty());
+        let expected = first.to_bytes().to_vec();
+        assert!(sym_default(c"qnx_dl_missing_second").is_null());
+        let mut next = [0u8; 4096];
+        let second = dl_error_into(&mut next).unwrap();
+        assert!(!second.is_empty());
+        assert_eq!(first.to_bytes(), expected);
+    }
+    #[test]
+    fn caller_buffer_reports_complete_capacity_and_preserves_bytes() {
+        let mut source = [b'x'; 8193];
+        source[100] = 0xff;
+        source[8192] = 0;
+        let text = CStr::from_bytes_with_nul(&source).unwrap();
+        let mut short = [b'!'; 1024];
+        assert_eq!(
+            copy_error(text, &mut short).unwrap_err().required,
+            source.len()
+        );
+        assert!(short.iter().all(|byte| *byte == b'!'));
+        let mut full = [0u8; 8193];
+        let result = copy_error(text, &mut full).unwrap();
+        assert_eq!(result.to_bytes_with_nul(), source);
+        let mut empty = [];
+        assert_eq!(copy_error(c"", &mut empty).unwrap_err().required, 1);
+    }
+    #[test]
+    fn insufficient_capacity_still_consumes_the_linker_error() {
+        assert!(sym_default(c"qnx_dl_missing_for_small_buffer").is_null());
+        let mut short = [0u8; 1];
+        assert!(dl_error_into(&mut short).unwrap_err().required > short.len());
+        let mut next = [0u8; 4096];
+        assert_eq!(dl_error_into(&mut next).unwrap(), c"");
+    }
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn owned_error_preserves_long_utf8_messages_without_a_cap() {
+        let text =
+            std::ffi::CString::new(std::string::String::from("\u{e4}").repeat(8192)).unwrap();
+        let error = own_error(&text);
+        assert_eq!(error, text.to_str().unwrap());
+        assert_eq!(error.len(), 16384);
+        let invalid = c"bad \xff byte";
+        assert_eq!(own_error(invalid), "bad \u{fffd} byte");
+    }
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn owned_error_survives_subsequent_linker_calls() {
+        assert!(sym_default(c"qnx_dl_missing_owned_first").is_null());
+        let first = dl_error();
+        assert_ne!(first, "");
+        let expected = first.clone();
+        assert!(sym_default(c"qnx_dl_missing_owned_second").is_null());
+        assert_ne!(dl_error(), "");
+        assert_eq!(first, expected);
     }
     #[test]
     fn qnx_mode_values_match_the_sdp_header() {

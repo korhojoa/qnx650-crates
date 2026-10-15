@@ -8,3 +8,6 @@ description = "Dynamic library loading and symbol lookup"
 
 [lib]
 name = "qnx_dl"
+
+[features]
+alloc = []

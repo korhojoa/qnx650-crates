@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use core::ffi::{c_char, c_int, c_void};
+#[cfg(feature = "alloc")]
+pub use qnx_dl::dl_error;
 pub use qnx_dl::{
-    dl_error, dlclose, dlerror, dlopen, dlsym, sym_default, Next, RTLD_DEFAULT, RTLD_GLOBAL,
-    RTLD_LAZY, RTLD_LOCAL, RTLD_NEXT, RTLD_NODELETE, RTLD_NOW,
+    dl_error_into, dlclose, dlerror, dlopen, dlsym, sym_default, ErrorBufferTooSmall, Next,
+    RTLD_DEFAULT, RTLD_GLOBAL, RTLD_LAZY, RTLD_LOCAL, RTLD_NEXT, RTLD_NODELETE, RTLD_NOW,
 };
 pub use qnx_time::{
     clock_gettime, gmtime_r, localtime_r, mono_ms, now_ms, time, wall_ms, Timespec, Tm,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Offsets and sizes of `sys/syspage.h` (SDP 6.5.0), measured with the
-//! SDP compiler for ARM (`LAYOUT.md`). All fields are fixed-width
+//! ARM compiler. All fields are fixed-width
 //! (`_Uint16t`, `_Uint32t`, `_Uint64t`); the one pointer, `asinfo_entry`'s
 //! `alloc_checker`, is 32 bits on both QNX 6.5 targets.
 pub const INFO_SIZE: usize = 4;

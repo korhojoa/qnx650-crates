@@ -15,4 +15,5 @@ qnx-dl = { path = "../qnx-dl" }
 qnx-time = { path = "../qnx-time" }
 
 [features]
+alloc = ["qnx-dl/alloc"]
 static-slogf = []

@@ -10,4 +10,5 @@ description = "ARM stack alignment and panic handlers at C interfaces"
 name = "oldabi_entry"
 
 [features]
+# Negative tests only. Do not enable this feature in production.
 no_realign = []
