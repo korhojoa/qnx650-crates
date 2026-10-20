@@ -1,8 +1,11 @@
+# qnx-usbdi: the io-usb client API (libusbdi.so.2) in Rust, for QNX 6.5.0.
+#
+# Copyright 2026. Licensed under the Apache License, Version 2.0.
 [package]
 name = "qnx-usbdi"
 version = "0.2.0"
 edition = "2021"
-description = "USB connection, control, bulk, and interrupt transfers"
+description = "Safe Rust over QNX 6.5 libusbdi: connect, attach, control, bulk and interrupt transfers"
 license = "Apache-2.0"
 build = "build.rs"
 

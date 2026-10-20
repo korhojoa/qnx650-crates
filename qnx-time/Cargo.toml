@@ -3,7 +3,7 @@ name = "qnx-time"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "QNX clocks and time conversions"
+description = "QNX 6.5 clocks without std: the clock ids, struct timespec and struct tm, and monotonic and wall milliseconds"
 
 [lib]
 name = "qnx_time"

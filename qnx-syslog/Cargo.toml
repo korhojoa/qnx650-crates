@@ -3,9 +3,10 @@ name = "qnx-syslog"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Program logging through syslog and standard error"
+description = "Log lines of a stand-alone QNX 6.5 executable: syslog() from libc.so.3 (into the slogger) plus a stderr copy stamped [ssss.mmm] on the monotonic clock, with run-time trace gating"
 
 [lib]
 name = "qnx_syslog"
 
+# Uses std. syslog lives in libc.so.3 on QNX 6.5.
 [dependencies]

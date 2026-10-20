@@ -1,4 +1,32 @@
+// SPDX-License-Identifier: Apache-2.0
+//! `Device`: an attached instance, its control pipe and its descriptors.
+//!
+//! Control transfers are synchronous on this io-usb (contract item 1,
+//! measured on both HCDs): `usbd_io(urb, ctrl_pipe, NULL, NULL,
+//! timeout_ms)`, and a completion callback on EP0 never fires. A
+//! transfer with a data stage is judged by its URB status (`CMP`) and,
+//! for IN, `alen`; one without a data stage (the `CLEAR_FEATURE`
+//! fallback) by `usbd_io == EOK` alone. The raw status pair is logged.
+//! Every transfer logs
+//! the measured milliseconds next to the timeout it passed and checks
+//! the removal flag first.
+//!
+//! Strings never go through `usbd_string` (contract item 12): its
+//! langid-0 form reads a cache that holds only the device descriptor
+//! here and fails with `ENOENT`; with a langid it returns a global buffer
+//! and fails on any code unit the C locale cannot encode. `string` does
+//! what libdlo's `usb_get_string_simple` does, with two `usbd_descriptor`
+//! calls, and maps every non-ASCII code unit to `?`.
+//!
+//! `Device` is `!Send`/`!Sync` (an `Rc` inside). A `BulkOut` opened on
+//! it shares the `Rc`, so the device is detached only after the last of
+//! the two is dropped, whichever order they go in.
+//!
 //! Copyright 2026. Licensed under the Apache License, Version 2.0.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::bulk::{BulkOut, CLEAR_HALT_TIMEOUT_MS};
 use crate::desc::{self, Endpoint, CONFIG_BUF_SIZE};
 use crate::events::{GoneFlag, Instance};
@@ -12,28 +40,51 @@ use crate::intr::IntrIn;
 use crate::intr_out::IntrOut;
 use crate::sys::{self, ControlSetup};
 use crate::{Error, Result};
-use std::cell::RefCell;
-use std::rc::Rc;
+
+/// Timeout for a standard `GET_DESCRIPTOR` (udlfb's
+/// `USB_CTRL_GET_TIMEOUT`, 5000 ms).
 pub const DESCRIPTOR_TIMEOUT_MS: u32 = 5000;
+
+/// `wValue` of a standard `GET_DESCRIPTOR`: the descriptor type in the
+/// high byte, the index in the low byte (USB 2.0 section 9.4.3; udlfb.c
+/// line 1573 reads the vendor descriptor with
+/// `usb_get_descriptor(udev, 0x5f, 0, ...)`, so it asks for 0x5F00).
 pub(crate) const fn descriptor_wvalue(dtype: u8, index: u8) -> u16 {
     ((dtype as u16) << 8) | (index as u16)
 }
+
+/// The device descriptor, decoded once after attach (the C clients read
+/// VID and PID from it, not from the instance's ident).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeviceDescriptor {
+    /// `idVendor`.
     pub vendor: u16,
+    /// `idProduct`.
     pub product: u16,
+    /// `bcdUSB`.
     pub bcd_usb: u16,
+    /// `bcdDevice`.
     pub bcd_device: u16,
+    /// `bDeviceClass`.
     pub class: u8,
+    /// `bDeviceSubClass`.
     pub subclass: u8,
+    /// `bDeviceProtocol`.
     pub protocol: u8,
+    /// `bMaxPacketSize0`.
     pub max_packet0: u8,
+    /// `iManufacturer` string index (0 = none).
     pub i_manufacturer: u8,
+    /// `iProduct` string index (0 = none).
     pub i_product: u8,
+    /// `iSerialNumber` string index (0 = none).
     pub i_serial: u8,
+    /// `bNumConfigurations`.
     pub num_configurations: u8,
 }
+
 impl DeviceDescriptor {
+    /// Decode the C struct.
     #[must_use]
     pub const fn from_raw(raw: &UsbdDeviceDescriptor) -> Self {
         DeviceDescriptor {
@@ -52,15 +103,23 @@ impl DeviceDescriptor {
         }
     }
 }
+
+/// What a `Device` and its `BulkOut`s share. Field order is drop order:
+/// the io-usb handles go before the connection reference.
 pub(crate) struct DeviceShared {
     pub(crate) inst: Instance,
     pub(crate) desc: DeviceDescriptor,
     pub(crate) gone: GoneFlag,
     pub(crate) config: RefCell<Option<Vec<u8>>>,
     pub(crate) sys: sys::DeviceSys,
+    /// Held so `usbd_disconnect` cannot run before `usbd_detach`.
     pub(crate) _host: Rc<HostShared>,
 }
+
 impl DeviceShared {
+    /// One control transfer with the removal check, the status judgement
+    /// and the log line. Returns the byte count for IN (clamped to the
+    /// buffer), the requested length for OUT, 0 for no data stage.
     pub(crate) fn control(
         &self,
         setup: ControlSetup,
@@ -117,9 +176,14 @@ impl DeviceShared {
         );
         Ok(if setup.dir_in { got } else { len })
     }
+
+    /// The pipe hygiene every non-control pipe shares (contract item 8):
+    /// `usbd_reset_pipe`, then the `CLEAR_FEATURE(ENDPOINT_HALT)` fallback,
+    /// which also resets the device-side data toggle. URBs in flight on
+    /// the pipe complete `ABORTED`.
+    ///
     /// # Errors
-    /// [`Error::Gone`] when the device is gone.
-    /// The fallback error when the two methods fail.
+    /// [`Error::Gone`]; the fallback's error when both fail.
     pub(crate) fn reset_pipe(&self, pipe: &sys::PipeSys, ep: Endpoint) -> Result<()> {
         if self.gone.is_set() {
             return Err(Error::Gone);
@@ -154,34 +218,51 @@ impl DeviceShared {
         }
     }
 }
+
 impl Drop for DeviceShared {
     fn drop(&mut self) {
         crate::log!("usbdi: releasing {}", self.inst);
     }
 }
+
+/// An attached device: `usbd_device` plus its control pipe.
 pub struct Device {
     shared: Rc<DeviceShared>,
 }
+
 impl Device {
     pub(crate) fn from_shared(shared: Rc<DeviceShared>) -> Device {
         Device { shared }
     }
+
+    /// The post-attach instance (what io-usb wrote back).
     #[must_use]
     pub fn instance(&self) -> Instance {
         self.shared.inst
     }
+
+    /// The device descriptor read after attach.
     #[must_use]
     pub fn descriptor(&self) -> DeviceDescriptor {
         self.shared.desc
     }
+
+    /// Whether a removal for this instance has been reported.
     #[must_use]
     pub fn gone(&self) -> bool {
         self.shared.gone.is_set()
     }
+
+    /// The removal flag itself, for a caller that wants to poll it.
     #[must_use]
     pub fn gone_flag(&self) -> GoneFlag {
         self.shared.gone.clone()
     }
+
+    /// String descriptor `index` in the device's first language, decoded
+    /// to ASCII with `?` for anything else. `None` for index 0, a removed
+    /// device, a failed transfer or a malformed descriptor; each is
+    /// logged.
     #[must_use]
     pub fn string(&self, index: u8) -> Option<String> {
         if index == 0 {
@@ -228,8 +309,14 @@ impl Device {
         }
         text
     }
+
+    /// The raw configuration descriptor block, fetched over EP0 with
+    /// `usbd_descriptor` (this io-usb caches only the device descriptor)
+    /// and cached after the first read. Truncated to `wTotalLength` or
+    /// [`CONFIG_BUF_SIZE`], whichever is smaller.
+    ///
     /// # Errors
-    /// [`Error::Gone`]. [`Error::Errno`] from the transfer.
+    /// [`Error::Gone`]; [`Error::Errno`] from the transfer;
     /// [`Error::BadDescriptor`] when the block does not start with a
     /// configuration descriptor.
     pub fn raw_config(&self) -> Result<Vec<u8>> {
@@ -240,8 +327,20 @@ impl Device {
         *self.shared.config.borrow_mut() = Some(buf.clone());
         Ok(buf)
     }
+
+    /// The configuration descriptor block at descriptor `index`
+    /// (`0..bNumConfigurations`), fetched over EP0 every time and never
+    /// cached. `GET_DESCRIPTOR(CONFIGURATION, index)` addresses the
+    /// device's list of configurations, NOT the active one: a device with
+    /// two configurations (the `DisplayLink` adapters ship a mass-storage
+    /// "virtual CD" configuration ahead of the display one) answers index
+    /// 0 with the same block whichever configuration is selected. A
+    /// caller that switches configurations picks the block whose
+    /// `bConfigurationValue` (byte 5) it selected and hands it to
+    /// [`Device::set_config_block`].
+    ///
     /// # Errors
-    /// [`Error::Gone`]. [`Error::Errno`] from the transfer.
+    /// [`Error::Gone`]; [`Error::Errno`] from the transfer;
     /// [`Error::BadDescriptor`] when the block does not start with a
     /// configuration descriptor.
     pub fn raw_config_at(&self, index: u8) -> Result<Vec<u8>> {
@@ -276,32 +375,58 @@ impl Device {
         );
         Ok(buf)
     }
+
+    /// Make `block` the configuration block every walk on this device
+    /// uses (`num_interfaces`, `endpoints`, `interface_class`,
+    /// `find_bulk_out`, and the vendor-descriptor fallback scan in the
+    /// caller). The claim path calls this after selecting a configuration
+    /// other than the first, because [`Device::raw_config`] would keep
+    /// answering with descriptor index 0.
     pub fn set_config_block(&self, block: Vec<u8>) {
         *self.shared.config.borrow_mut() = Some(block);
     }
+
+    /// `bNumInterfaces` of the configuration block.
+    ///
     /// # Errors
     /// As [`Device::raw_config`].
     pub fn num_interfaces(&self) -> Result<u8> {
         desc::num_interfaces(&self.raw_config()?)
     }
+
+    /// The endpoints of interface `iface` alternate `alt`, from the
+    /// byte-wise walk.
+    ///
     /// # Errors
-    /// As [`Device::raw_config`]. [`Error::BadDescriptor`] when the
+    /// As [`Device::raw_config`]; [`Error::BadDescriptor`] when the
     /// block has no such interface.
     pub fn endpoints(&self, iface: u8, alt: u8) -> Result<Vec<Endpoint>> {
         desc::endpoints(&self.raw_config()?, iface, alt)
     }
+
+    /// The class triple of interface `iface` alternate `alt`.
+    ///
     /// # Errors
     /// As [`Device::endpoints`].
     pub fn interface_class(&self, iface: u8, alt: u8) -> Result<(u8, u8, u8)> {
         desc::interface_class(&self.raw_config()?, iface, alt)
     }
+
+    /// The first bulk OUT endpoint of interface `iface` alternate `alt`
+    /// (warns when it is not endpoint 1).
+    ///
     /// # Errors
-    /// As [`Device::endpoints`]. [`Error::NoEndpoint`] when there is none.
+    /// As [`Device::endpoints`]; [`Error::NoEndpoint`] when there is none.
     pub fn find_bulk_out(&self, iface: u8, alt: u8) -> Result<Endpoint> {
         desc::find_bulk_out(&self.raw_config()?, iface, alt)
     }
+
+    /// `usbd_select_config`. Whether to issue it at all is the caller's
+    /// decision through [`desc::config_to_select`] (contract item 7): on
+    /// an already-configured composite it must not be.
+    ///
     /// # Errors
-    /// [`Error::Gone`]. [`Error::Errno`] from io-usb (logged with the
+    /// [`Error::Gone`]; [`Error::Errno`] from io-usb (logged with the
     /// instance's config and, when the block has been read, its
     /// `bNumInterfaces`).
     pub fn select_config(&self, cfg: u8) -> Result<()> {
@@ -323,8 +448,12 @@ impl Device {
             }
         }
     }
+
+    /// `usbd_select_interface`, always issued by the claim path
+    /// (contract item 7).
+    ///
     /// # Errors
-    /// [`Error::Gone`]. [`Error::Errno`] from io-usb (logged with the
+    /// [`Error::Gone`]; [`Error::Errno`] from io-usb (logged with the
     /// instance's config and, when the block has been read, its
     /// `bNumInterfaces`).
     pub fn select_interface(&self, iface: u8, alt: u8) -> Result<()> {
@@ -346,8 +475,14 @@ impl Device {
             }
         }
     }
+
+    /// A control transfer, device to host: `URB_DIR_IN |
+    /// URB_SHORT_XFER_OK`, `rtype` passed through (the type and
+    /// recipient bits; io-usb supplies the direction bit). Returns the
+    /// bytes that arrived, at most `buf.len()`.
+    ///
     /// # Errors
-    /// [`Error::Gone`]. [`Error::Errno`] when `usbd_io` refuses.
+    /// [`Error::Gone`]; [`Error::Errno`] when `usbd_io` refuses;
     /// [`Error::Status`] when the URB did not complete `CMP` (a `STALL`
     /// or a timed-out stage is reported this way).
     pub fn control_in(
@@ -368,6 +503,13 @@ impl Device {
         };
         self.shared.control(setup, buf, timeout_ms)
     }
+
+    /// A control transfer, host to device. With `data` empty there is no
+    /// data stage and the transfer is judged by `usbd_io` alone. With
+    /// data, the status must be `CMP`; the reported length is logged,
+    /// not judged (none of the C clients judge it and what io-usb reports
+    /// for a control OUT is unmeasured).
+    ///
     /// # Errors
     /// As [`Device::control_in`].
     pub fn control_out(
@@ -389,6 +531,12 @@ impl Device {
         let mut copy = data.to_vec();
         self.shared.control(setup, &mut copy, timeout_ms).map(drop)
     }
+
+    /// Standard `GET_DESCRIPTOR` (`bRequest 6`, `wValue = dtype << 8 |
+    /// index`, `wIndex = langid`) as a generic control transfer, so the
+    /// byte count that arrived is known (`usbd_descriptor` reports none).
+    /// This is how the `DisplayLink` vendor descriptor `0x5F` is read.
+    ///
     /// # Errors
     /// As [`Device::control_in`].
     pub fn get_descriptor(
@@ -407,18 +555,31 @@ impl Device {
             DESCRIPTOR_TIMEOUT_MS,
         )
     }
+
+    /// Open the bulk OUT pipe on `ep` with a ring of `slots` URBs, each
+    /// with a `usbd_alloc` buffer of `slot_bytes`, and run the pipe
+    /// hygiene of contract item 8 (`usbd_reset_pipe`, then the
+    /// `CLEAR_FEATURE(ENDPOINT_HALT)` fallback; a failure is logged, not
+    /// fatal, and [`BulkOut::reset`] can be retried).
+    ///
     /// # Errors
-    /// [`Error::NoEndpoint`] unless `ep` is bulk OUT. [`Error::Errno`]
-    /// (`EINVAL`) for zero slots or bytes. [`Error::Gone`].
+    /// [`Error::NoEndpoint`] unless `ep` is bulk OUT; [`Error::Errno`]
+    /// (`EINVAL`) for zero slots or bytes; [`Error::Gone`];
     /// [`Error::Errno`] from `usbd_open_pipe` or the allocations.
     pub fn open_bulk_out(&self, ep: Endpoint, slots: usize, slot_bytes: usize) -> Result<BulkOut> {
         BulkOut::open(Rc::clone(&self.shared), ep, slots, slot_bytes)
     }
+
+    /// Open the bulk IN pipe on `ep` with `slots` URBs of `slot_bytes`
+    /// each, all armed, after the same pipe hygiene as
+    /// [`Device::open_bulk_out`]. Received data comes out of
+    /// [`crate::bulk_in::BulkIn::read`].
+    ///
     /// # Errors
-    /// [`Error::NoEndpoint`] unless `ep` is bulk IN.
-    /// [`Error::Errno`] (`EINVAL`) for zero slots, zero bytes, or no armed URB.
-    /// [`Error::Gone`] when the device is gone.
-    /// [`Error::Errno`] from `usbd_open_pipe` or allocation.
+    /// [`Error::NoEndpoint`] unless `ep` is bulk IN; [`Error::Errno`]
+    /// (`EINVAL`) for zero slots or bytes, or when no URB could be armed;
+    /// [`Error::Gone`]; [`Error::Errno`] from `usbd_open_pipe` or the
+    /// allocations.
     pub fn open_bulk_in(
         &self,
         ep: Endpoint,
@@ -427,25 +588,39 @@ impl Device {
     ) -> Result<crate::bulk_in::BulkIn> {
         crate::bulk_in::BulkIn::open(Rc::clone(&self.shared), ep, slots, slot_bytes)
     }
+
+    /// Open the interrupt IN pipe on `ep` with `slots` URBs of the
+    /// endpoint's `wMaxPacketSize` each, all armed, after the same pipe
+    /// hygiene as [`Device::open_bulk_out`]. Reports come out of
+    /// [`IntrIn::read`].
+    ///
     /// # Errors
-    /// [`Error::NoEndpoint`] unless `ep` is interrupt IN.
-    /// [`Error::Errno`] (`EINVAL`) for zero slots, zero packet size, or no armed URB.
-    /// [`Error::Gone`] when the device is gone.
-    /// [`Error::Errno`] from `usbd_open_pipe` or allocation.
+    /// [`Error::NoEndpoint`] unless `ep` is interrupt IN; [`Error::Errno`]
+    /// (`EINVAL`) for zero slots or a zero packet size, or when no URB
+    /// could be armed; [`Error::Gone`]; [`Error::Errno`] from
+    /// `usbd_open_pipe` or the allocations.
     pub fn open_intr_in(&self, ep: Endpoint, slots: usize) -> Result<IntrIn> {
         IntrIn::open(Rc::clone(&self.shared), ep, slots)
     }
+
+    /// Open the interrupt OUT pipe on `ep` with one URB and one
+    /// `usbd_alloc` buffer of the endpoint's `wMaxPacketSize`, after the
+    /// same pipe hygiene as [`Device::open_bulk_out`]. Reports go out
+    /// through [`IntrOut::write`], one synchronous transfer each.
+    ///
     /// # Errors
-    /// [`Error::NoEndpoint`] unless `ep` is interrupt OUT.
-    /// [`Error::Errno`] (`EINVAL`) for a zero packet size. [`Error::Gone`].
+    /// [`Error::NoEndpoint`] unless `ep` is interrupt OUT;
+    /// [`Error::Errno`] (`EINVAL`) for a zero packet size; [`Error::Gone`];
     /// [`Error::Errno`] from `usbd_open_pipe` or the allocations.
     pub fn open_intr_out(&self, ep: Endpoint) -> Result<IntrOut> {
         IntrOut::open(Rc::clone(&self.shared), ep)
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn device_descriptor_decodes_every_field() {
         let raw = UsbdDeviceDescriptor {
@@ -472,8 +647,12 @@ mod tests {
         assert_eq!((d.i_manufacturer, d.i_product, d.i_serial), (1, 2, 3));
         assert_eq!(d.num_configurations, 1);
     }
+
     #[test]
     fn get_descriptor_packs_wvalue_as_type_then_index() {
+        // get_descriptor passes descriptor_wvalue's result as wValue, so
+        // the vendor descriptor read asks for 0x5F00; the 0x03/2 case
+        // fails if the two bytes are swapped.
         assert_eq!(descriptor_wvalue(0x5F, 0), 0x5F00);
         assert_eq!(descriptor_wvalue(0x03, 2), 0x0302);
         assert_eq!(descriptor_wvalue(0x01, 0), 0x0100);

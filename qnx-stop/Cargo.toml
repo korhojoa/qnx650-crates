@@ -3,7 +3,7 @@ name = "qnx-stop"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Process shutdown flags for SIGINT and SIGTERM"
+description = "A process-wide stop flag set by SIGINT and SIGTERM on QNX 6.5, for daemons that end their loops in order"
 
 [lib]
 name = "qnx_stop"

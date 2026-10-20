@@ -3,7 +3,10 @@ name = "qnx-qsa"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "QNX Sound Architecture playback and mixer access"
+description = "QNX 6.5 Sound Architecture through libasound.so: PCM playback through the plugin layer and mixer group volume, with the sys/asound.h layouts pinned"
 
+# The calls live in libasound.so.2 on QNX 6.5 (linked by name, from the
+# SDP library directory the target linker searches). A host build gets
+# stand-ins that fail, so the crate and its users compile and test there.
 [lib]
 name = "qnx_qsa"

@@ -1,130 +1,63 @@
-# Shared Rust crates for QNX 6.5
+# qnx650-crates
 
-This workspace contains 17 Rust crates for QNX 6.5.
-The QNX target is `armv7-unknown-nto-qnx650`.
-The source is work in progress. APIs can change.
-Each crate has a separate version and license declaration.
-The workspace contains no QNX SDK or runtime libraries.
+Rust interfaces for ARM QNX 6.5 applications.
+Applications use the libraries through Cargo path dependencies.
+The repository supplies no firmware or SDK headers.
+
+See [Terms](docs/TERMS.md) for the technical names and
+[Settings](docs/SETTINGS.md) for configuration files and values.
 
 | Crate | Function |
 | --- | --- |
-| `hidkbm-ring` | Shared HID event rings and PPS notifications |
-| `joined-worker` | Worker shutdown, wake paths, and thread joins |
-| `oldabi-entry` | ARM stack alignment and panic handlers at C interfaces |
-| `qnx-dl` | Dynamic library loading and symbol lookup |
-| `qnx-errno` | Error number access without the Rust standard library |
-| `qnx-mmio` | Device memory mappings and register access |
-| `qnx-msg` | Neutrino messages, pulses, channels, and interrupt events |
-| `qnx-procfs` | Process information from the QNX process file system |
-| `qnx-qsa` | QNX Sound Architecture playback and mixer access |
-| `qnx-resmgr` | QNX resource manager interfaces and message layouts |
-| `qnx-shm` | POSIX shared memory mappings |
-| `qnx-slog` | Slog logging for libraries and programs |
-| `qnx-stop` | Process shutdown flags for SIGINT and SIGTERM |
-| `qnx-syslog` | Program logging through syslog and standard error |
-| `qnx-syspage` | CPU and memory information from the QNX system page |
-| `qnx-time` | QNX clocks and time conversions |
-| `qnx-usbdi` | USB connection, control, bulk, and interrupt transfers |
+| `hidkbm-ring` | Read keyboard and mouse ring events. |
+| `joined-worker` | Stop and join an owned worker. |
+| `oldabi-entry` | Align calls from the older ARM ABI. |
+| `qnx-dl` | Load libraries and find symbols. |
+| `qnx-errno` | Read and set the thread error number. |
+| `qnx-mmio` | Map device memory. |
+| `qnx-msg` | Use channels, connections, messages and pulses. |
+| `qnx-procfs` | Read process information. |
+| `qnx-qsa` | Use QNX Sound Architecture interfaces. |
+| `qnx-resmgr` | Use resource manager and dispatch interfaces. |
+| `qnx-shm` | Map POSIX shared memory. |
+| `qnx-slog` | Write fixed-buffer log messages. |
+| `qnx-stop` | Stop and wait for an owned process. |
+| `qnx-syslog` | Write system log messages. |
+| `qnx-syspage` | Read system page data. |
+| `qnx-time` | Read monotonic and wall clocks. |
+| `qnx-usbdi` | Use USB device interfaces. |
 
-## Use a crate
+## Fetch and build
 
-The workspace supports path dependencies from a Git submodule.
-For example, a consumer can use this dependency:
+Install Git and Podman or Docker. Fetch the source:
 
-```toml
-qnx-usbdi = { path = "third_party/qnx650-crates/qnx-usbdi" }
+```sh
+git clone https://github.com/korhojoa/qnx650-crates.git
 ```
 
-The consumer repository pins the submodule commit.
-The published `ghcr.io/korhojoa/qnx650-compiler` container builds all 17 crates.
-No separate QNX SDK installation is needed for these builds.
-Host builds use test implementations for the QNX interfaces.
-Host tests do not execute those hardware or operating system interfaces.
+From the new source folder, run one build command:
 
-## Checks
-
-The following host commands require Rust 1.99.0.
-The container procedure below supplies the QNX compiler and target libraries.
-
-1. Check formatting.
-
-   ```sh
-   cargo fmt --all --check
-   ```
-
-2. Run the host tests.
-
-   ```sh
-   cargo test --offline --locked --workspace
-   ```
-
-3. Run Clippy.
-
-   ```sh
-   cargo clippy --offline --locked --workspace --all-targets -- -D warnings -W clippy::pedantic
-   ```
-
-4. Create the container output directory.
-
-   ```sh
-   mkdir -p target-qnx
-   ```
-
-5. Run the QNX checks in the published container.
-
-   ```sh
-   podman run --rm \
-       -v "$PWD:/src:ro" \
-       -v "$PWD/target-qnx:/target" \
-       -w /src \
-       -e CARGO_TARGET_DIR=/target \
-       ghcr.io/korhojoa/qnx650-compiler@sha256:85f95b995d4b5dc2c323a6842c29b5c08652f34cc2288f6cc745534f5b2ecc7a \
-       bash -euo pipefail -c '
-           cargo clippy --offline --locked --target armv7-unknown-nto-qnx650 --workspace --all-targets -- -D warnings -W clippy::pedantic
-           cargo build --offline --release --locked --target armv7-unknown-nto-qnx650 --workspace
-       '
-   ```
-
-The container reads the source without write access.
-It writes build output to `target-qnx`.
-
-## Features
-
-- `hidkbm-ring/shm` enables the shared memory producer and reader. It is enabled by default.
-- `qnx-slog/static-slogf` selects the direct `/dev/slog` writer. It does not link a static logging library.
-- `qnx-dl/alloc` enables owned linker error strings.
-- `qnx-slog/alloc` enables the owned error re-export and `qnx-dl/alloc`.
-- `oldabi-entry/no_realign` disables ARM stack alignment for negative tests.
-
-Do not enable `oldabi-entry/no_realign` in production builds.
-Do not use `--all-features` for production builds of this workspace.
-
-## Error text and register access
-
-`qnx-dl::dl_error()` returns a complete owned `String` when the `alloc` feature is enabled.
-The text remains valid after later dynamic linker calls.
-The wrapper imposes no message length limit.
-
-An allocating consumer can use this dependency:
-
-```toml
-qnx-dl = { path = "third_party/qnx650-crates/qnx-dl", features = ["alloc"] }
+```sh
+./build.sh
 ```
 
-Allocation-free consumers use `dl_error_into(&mut buffer)`.
-It returns the complete error as a `CStr` that borrows the caller's buffer.
-Insufficient capacity returns `ErrorBufferTooSmall` with the required byte count, including the NUL terminator.
-The buffer remains unchanged on failure. The wrapper never truncates the message.
-The call consumes the linker error even when capacity is insufficient.
-A later call with a larger buffer cannot retrieve that same error.
+The command uses the public compiler image pinned in `compiler-image.txt`.
+It fetches locked dependencies, checks formatting and Clippy, runs host tests, and builds all ARM QNX libraries.
+Set `CONTAINER_ENGINE=docker` to use Docker. The default engine is Podman.
+Set `CARGO_TARGET_DIR` to reuse a separate target cache.
+The workspace uses one root lock file and the normal Cargo cache.
+The libraries have no installation folder or configuration file.
+Applications supply all file paths and native interfaces.
+Installation of the extenders is described in the [combined guide](https://github.com/korhojoa/mib2-extenders/blob/main/INSTALL.md).
 
-`DeviceMapping::len()` returns the requested byte count.
-Register accesses must stay within that range and have four-byte alignment.
-The constructor rejects an unaligned physical address.
-`write()` returns false for a read-only mapping.
+## Status
+
+The layout assertions check the native ABI sizes and offsets.
+Host tests use substitutes when a native service is required.
+The tests do not qualify native service behavior or a head-unit installation.
 
 ## License
 
-Each Cargo manifest specifies Apache-2.0 or MIT OR Apache-2.0.
-The workspace contains [Apache-2.0](LICENSE-APACHE) and [MIT](LICENSE-MIT) license texts.
-The source files retain their existing copyright notices.
+`hidkbm-ring`, `joined-worker`, `qnx-mmio`, `qnx-syslog`, `qnx-syspage` and `qnx-usbdi` use `Apache-2.0`.
+The other libraries use `MIT OR Apache-2.0`. You can choose either license for those libraries.
+See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).

@@ -4,8 +4,10 @@ version = "0.3.0"
 edition = "2021"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "Slog logging for libraries and programs"
+description = "slog logging for QNX 6.5 code on the MIB2 head unit: libraries injected into vendor processes and stand-alone programs"
 
+# #![no_std] and no dependency outside this workspace: usable inside a
+# vendor process (no allocation, no panic paths) and from ordinary programs.
 
 [lib]
 name = "qnx_slog"
@@ -16,4 +18,8 @@ qnx-time = { path = "../qnx-time" }
 
 [features]
 alloc = ["qnx-dl/alloc"]
+# Stand-alone programs: write /dev/slog directly (src/direct.rs), never look
+# for slogf/vslogf in the process. Libraries injected into a vendor process
+# leave this off and use the process's own slogf/vslogf, with the direct
+# writer as the fallback.
 static-slogf = []

@@ -3,8 +3,10 @@ name = "qnx-msg"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Neutrino messages, pulses, channels, and interrupt events"
+description = "QNX 6.5 Neutrino message passing: channels, connections, send/receive/reply, pulses, name_attach/name_open, struct sigevent, iov_t, TimerTimeout, interrupt events and ionotify, with the SDP layouts pinned"
 
+# #![no_std]. The kernel calls live in libc.so.3 on QNX 6.5, so nothing
+# extra is linked. A host build gets stand-ins that fail with ENOSYS.
 [lib]
 name = "qnx_msg"
 

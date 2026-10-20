@@ -3,12 +3,16 @@ name = "oldabi-entry"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "ARM stack alignment and panic handlers at C interfaces"
+description = "The edge of a QNX 6.5 ARM library entered from old-ABI vendor code: stack-realigning export trampolines and the no_std panic handlers"
 
+# Zero dependencies and #![no_std]. The trampolines are ARM assembly and
+# expand only in an ARM build; the panic handler pieces build anywhere.
 
 [lib]
 name = "oldabi_entry"
 
 [features]
-# Negative tests only. Do not enable this feature in production.
+# Negative control for difftests only: the trampolines skip the SP
+# realignment (`bic` becomes `nop`, or `mov r12, sp` in the short form), so
+# a misaligned-caller test must then FAIL. Never ship a build with this.
 no_realign = []

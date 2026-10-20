@@ -3,7 +3,7 @@ name = "qnx-shm"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "POSIX shared memory mappings"
+description = "POSIX shared memory on QNX 6.5: create or open a named object and map it, with the QNX constants and the 32-bit off_t"
 
 [lib]
 name = "qnx_shm"

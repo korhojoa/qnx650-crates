@@ -3,8 +3,11 @@ name = "qnx-dl"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Dynamic library loading and symbol lookup"
+description = "The QNX 6.5 dynamic linker calls (dlopen, dlsym) with the QNX RTLD values, typed symbol lookup and a cached RTLD_NEXT lookup for interposers"
 
+# Zero dependencies and #![no_std]: usable inside a vendor process (a
+# library injected with LD_PRELOAD or loaded by a loader) and from ordinary
+# programs.
 
 [lib]
 name = "qnx_dl"

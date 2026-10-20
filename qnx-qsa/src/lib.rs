@@ -2,21 +2,48 @@
 //! The QNX Sound Architecture on QNX 6.5 through its client library
 //! `libasound.so`: PCM playback through the plugin layer ([`PcmDevice`])
 //! and the volume of a mixer group ([`Mixer`]).
+//!
+//! The structure layouts are those of `sys/asound.h` of the QNX 6.5.0 SDP,
+//! measured with the target compiler (`LAYOUT.md` lists every size, offset
+//! and value with its header line). Const asserts repeat them, so a change
+//! to a declaration that moves a field does not compile. The asserts of a
+//! structure that holds a pointer the library follows apply to 32-bit
+//! builds only.
+//!
+//! On a host that is not QNX the library calls are replaced by ones that
+//! return -1, so the crate and its users compile and test there.
+
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::fmt;
 use std::mem::{offset_of, size_of};
+
+/// `SND_PCM_OPEN_PLAYBACK`.
 const OPEN_PLAYBACK: c_int = 1;
+/// `SND_PCM_CHANNEL_PLAYBACK`.
 const CHANNEL_PLAYBACK: i32 = 0;
+/// `SND_PCM_SFMT_S16_LE`.
 const SAMPLE_FORMAT_S16_LE: i32 = 4;
+/// `SND_PCM_MODE_BLOCK`.
 const MODE_BLOCK: i32 = 1;
+/// `SND_PCM_START_FULL`: playback starts when the buffer is full.
 const START_FULL: i32 = 2;
+/// `SND_PCM_STOP_STOP`: playback stops when the buffer runs empty.
 const STOP_STOP: i32 = 1;
+
+/// `SND_MIXER_CHN_FRONT_LEFT`: the index of the front left voice in a
+/// group's volume values.
 pub const CHANNEL_FRONT_LEFT: usize = 0;
+/// `SND_MIXER_CHN_FRONT_RIGHT`.
 pub const CHANNEL_FRONT_RIGHT: usize = 1;
+/// `SND_MIXER_GRP_MAX_VOICES`: the number of volume values of a group.
 pub const GROUP_MAX_VOICES: usize = 32;
+/// `SND_MIXER_GRPCAP_VOLUME`: the group has a volume.
 pub const GROUP_CAP_VOLUME: u32 = 1;
+
+/// `snd_pcm_format_t` (144 bytes).
 #[repr(C)]
 struct PcmFormat {
+    /// `uint32_t interleave:1`: bit 0 of the first word.
     interleave: u32,
     format: i32,
     rate: i32,
@@ -24,26 +51,38 @@ struct PcmFormat {
     special: i32,
     reserved: [u8; 124],
 }
+
+/// `snd_pcm_digital_t` (304 bytes of byte fields; always sent as zero).
 #[repr(C)]
 struct PcmDigital([u8; 304]);
+
+/// `snd_pcm_channel_params_t` (752 bytes) with the `block` member of its
+/// buffer union.
 #[repr(C)]
 struct ChannelParams {
     channel: i32,
     mode: i32,
+    /// `snd_pcm_sync_t`: a 16-byte union with 64-bit members.
     sync: [u64; 2],
     format: PcmFormat,
     digital: PcmDigital,
     start_mode: i32,
     stop_mode: i32,
+    /// `int32_t time:1, ust_time:1`.
     time_flags: i32,
     why_failed: u32,
     fragment_bytes: i32,
     fragments_min: i32,
     fragments_max: i32,
+    /// The rest of the buffer union, whose largest member (`block`) is 136
+    /// bytes.
     buffer_reserved: [u8; 124],
     sw_mixer_subchannel_name: [u8; 32],
     reserved: [u8; 96],
 }
+
+/// `snd_pcm_channel_setup_t` (728 bytes) with the `block` member of its
+/// buffer union.
 #[repr(C)]
 struct ChannelSetup {
     channel: i32,
@@ -55,33 +94,47 @@ struct ChannelSetup {
     fragments_min: i32,
     fragments_max: i32,
     max_fragment_bytes: u32,
+    /// The rest of the 144-byte `block` member.
     buffer_reserved: [u8; 124],
     msbits_per_sample: i16,
     pad1: i16,
     mixer_device: i32,
+    /// `snd_mixer_eid_t *` on the 32-bit QNX targets; never followed here.
     mixer_element: u32,
+    /// `snd_mixer_gid_t *`, as above.
     mixer_group: u32,
+    /// `uint8_t mmap_valid:1, mmap_active:1` and the padding after it.
     mmap_flags: [u8; 4],
     mixer_card: i32,
     reserved: [u8; 104],
 }
+
+/// `snd_pcm_channel_status_t` (184 bytes).
 #[repr(C)]
 struct ChannelStatus {
     channel: i32,
     mode: i32,
     status: i32,
+    /// `scount`: bytes the device has processed since playback started.
     processed_bytes: u32,
+    /// `struct timeval stime` (two 32-bit words on QNX 6.5).
     start_time: [u32; 2],
     start_time_ust: u64,
     fragment: i32,
+    /// `count` and `free`: bytes in the buffer and bytes free in it.
     buffered_bytes: i32,
     free_bytes: i32,
+    /// Underruns since the previous status call.
     underruns: i32,
     overruns: i32,
     overrange: i32,
+    /// `subbuffered`: bytes the plugin layer holds as an incomplete
+    /// fragment.
     plugin_held_bytes: u32,
     reserved: [u8; 124],
 }
+
+/// `snd_mixer_gid_t` (168 bytes): names one mixer group.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RawGroupId {
@@ -91,6 +144,9 @@ struct RawGroupId {
     reserved: [u8; 124],
     weight: i32,
 }
+
+/// `snd_mixer_group_t` (496 bytes) with the `values` member of its volume
+/// union.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct RawGroup {
@@ -99,6 +155,7 @@ struct RawGroup {
     channels: u32,
     min: i32,
     max: i32,
+    /// `volume.values`; the union is 152 bytes, 24 more than the values.
     volume: [u32; GROUP_MAX_VOICES],
     volume_rest: [u8; 24],
     mute: u32,
@@ -107,6 +164,7 @@ struct RawGroup {
     elements_size: i32,
     elements: i32,
     elements_over: i32,
+    /// `snd_mixer_eid_t *pelements`: null, so the library fills no list.
     elements_list: *mut c_void,
     change_duration: u16,
     spare: u16,
@@ -114,6 +172,8 @@ struct RawGroup {
     max_db: i32,
     reserved: [u8; 120],
 }
+
+/// `snd_mixer_groups_t` (152 bytes on the 32-bit targets).
 #[repr(C)]
 struct RawGroups {
     groups: i32,
@@ -124,6 +184,7 @@ struct RawGroups {
     pzero: *mut c_void,
     reserved: [u8; 128],
 }
+
 const _: () = assert!(size_of::<PcmFormat>() == 144);
 const _: () = assert!(offset_of!(PcmFormat, reserved) == 20);
 const _: () = assert!(size_of::<PcmDigital>() == 304);
@@ -189,12 +250,17 @@ const _: () = {
     assert!(offset_of!(RawGroups, pzero) == 20);
     assert!(offset_of!(RawGroups, reserved) == 24);
 };
+
+/// A value of a structure above with every byte zero, which is what the
+/// library expects in each field this crate does not set.
 fn zeroed<T: Zeroable>() -> T {
     // SAFETY: `Zeroable` is implemented only for the `repr(C)` structures
     // above. Their fields are integers, byte arrays and raw pointers, for
     // which all bits zero is a valid value (a null pointer).
     unsafe { std::mem::zeroed() }
 }
+
+/// The structures for which all bits zero is a valid value.
 trait Zeroable {}
 impl Zeroable for ChannelParams {}
 impl Zeroable for ChannelSetup {}
@@ -202,11 +268,13 @@ impl Zeroable for ChannelStatus {}
 impl Zeroable for RawGroupId {}
 impl Zeroable for RawGroup {}
 impl Zeroable for RawGroups {}
+
 #[cfg(target_os = "nto")]
 mod sys {
     use super::{
         c_char, c_int, c_void, ChannelParams, ChannelSetup, ChannelStatus, RawGroup, RawGroups,
     };
+
     #[link(name = "asound")]
     extern "C" {
         pub fn snd_pcm_open_preferred(
@@ -235,12 +303,15 @@ mod sys {
         pub fn snd_mixer_group_write(handle: *mut c_void, group: *mut RawGroup) -> c_int;
     }
 }
+
+/// Stand-ins for a host without `libasound`: every call fails.
 #[cfg(not(target_os = "nto"))]
 #[allow(clippy::unnecessary_wraps, clippy::missing_safety_doc)]
 mod sys {
     use super::{
         c_char, c_int, c_void, ChannelParams, ChannelSetup, ChannelStatus, RawGroup, RawGroups,
     };
+
     pub unsafe fn snd_pcm_open_preferred(
         _handle: *mut *mut c_void,
         _card: *mut c_int,
@@ -302,22 +373,33 @@ mod sys {
         -1
     }
 }
+
+/// A library call that failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QsaError {
+    /// The library function.
     pub call: &'static str,
+    /// What it returned.
     pub code: i32,
+    /// The library's text for the code (`snd_strerror`).
     pub text: String,
 }
+
 impl fmt::Display for QsaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} returned {} ({})", self.call, self.code, self.text)
     }
 }
+
 impl std::error::Error for QsaError {}
+
+/// The library's text for a QSA return code (`snd_strerror`), or `None`
+/// when the library gives none (always on a host, where no library is
+/// linked).
 #[must_use]
 pub fn strerror(code: i32) -> Option<String> {
     // SAFETY: `snd_strerror` returns a static NUL-terminated string or
-    // null. The host stand-in returns null.
+    // null; the host stand-in returns null.
     unsafe {
         let text = sys::snd_strerror(code);
         if text.is_null() {
@@ -327,10 +409,12 @@ pub fn strerror(code: i32) -> Option<String> {
         }
     }
 }
+
 fn error(call: &'static str, code: c_int) -> QsaError {
     let text = strerror(code).unwrap_or_else(|| String::from("no text"));
     QsaError { call, code, text }
 }
+
 fn check(call: &'static str, code: c_int) -> Result<(), QsaError> {
     if code < 0 {
         Err(error(call, code))
@@ -338,20 +422,35 @@ fn check(call: &'static str, code: c_int) -> Result<(), QsaError> {
         Ok(())
     }
 }
+
+/// The state `io-audio` reports for a playback channel
+/// (`SND_PCM_STATUS_*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceState {
+    /// `SND_PCM_STATUS_NOTREADY`.
     NotReady,
+    /// Needs a prepare before it takes data.
     Ready,
+    /// Takes data; playback has not started.
     Prepared,
+    /// Playing.
     Running,
+    /// The buffer ran empty during playback; needs a prepare.
     Underrun,
+    /// `SND_PCM_STATUS_OVERRUN` (capture).
     Overrun,
+    /// `SND_PCM_STATUS_PAUSED`.
     Paused,
+    /// A hardware error; needs a prepare.
     Error,
+    /// The stream changed; needs new parameters.
     Change,
+    /// A value `sys/asound.h` does not name.
     Other(i32),
 }
+
 impl DeviceState {
+    /// The state for a `SND_PCM_STATUS_*` value.
     #[must_use]
     pub fn from_raw(raw: i32) -> Self {
         match raw {
@@ -367,6 +466,8 @@ impl DeviceState {
             other => Self::Other(other),
         }
     }
+
+    /// The `SND_PCM_STATUS_*` value.
     #[must_use]
     pub fn raw(self) -> i32 {
         match self {
@@ -383,6 +484,7 @@ impl DeviceState {
         }
     }
 }
+
 impl fmt::Display for DeviceState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -399,40 +501,80 @@ impl fmt::Display for DeviceState {
         }
     }
 }
+
+/// What [`PcmDevice::configure`] asks for: interleaved signed 16-bit
+/// little-endian PCM in block mode. Playback starts when the buffer is
+/// full (`SND_PCM_START_FULL`) and stops when it runs empty
+/// (`SND_PCM_STOP_STOP`). The plugin layer converts rate and voices to
+/// what the device takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlaybackConfig {
+    /// Samples per second.
     pub rate: u32,
+    /// Interleaved voices (1 mono, 2 stereo).
     pub voices: u32,
+    /// Bytes in one fragment (the device may set a different size).
     pub fragment_bytes: usize,
+    /// The fewest fragments the buffer holds.
     pub fragments_min: usize,
+    /// The most fragments the buffer holds; with `START_FULL`, the
+    /// fragments buffered before playback starts.
     pub fragments_max: usize,
 }
+
+/// What `io-audio` set up for a handle after its parameters were accepted
+/// (`snd_pcm_channel_setup_t`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Geometry {
+    /// Samples per second.
     pub rate: i32,
+    /// Interleaved voices.
     pub voices: i32,
+    /// `SND_PCM_SFMT_*`.
     pub sample_format: i32,
+    /// Bytes in one fragment.
     pub fragment_bytes: i32,
+    /// Fragments in the buffer.
     pub fragments: i32,
+    /// The fewest fragments.
     pub fragments_min: i32,
+    /// The most fragments.
     pub fragments_max: i32,
+    /// The largest fragment the device takes.
     pub max_fragment_bytes: u32,
 }
+
+/// One reading of a handle's status (`snd_pcm_channel_status_t`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceStatus {
+    /// The channel's state.
     pub state: DeviceState,
+    /// Bytes the device has processed since playback last started, in the
+    /// stream's format.
     pub processed_bytes: u32,
+    /// Bytes in the buffer. A software mixer can report zero in all states.
     pub buffered_bytes: i32,
+    /// Bytes free in the buffer. Reads 0 as `buffered_bytes` does.
     pub free_bytes: i32,
+    /// Underruns since the previous status call.
     pub underruns: i32,
+    /// Bytes the plugin layer holds as an incomplete fragment.
     pub plugin_held_bytes: u32,
 }
+
+/// One open playback handle on the preferred PCM device. Closed on drop.
+/// Not `Send`: used by the thread that opened it only.
 pub struct PcmDevice {
     handle: *mut c_void,
+    /// The card `snd_pcm_open_preferred` opened.
     pub card: i32,
+    /// The device on that card.
     pub device: i32,
 }
+
 impl PcmDevice {
+    /// Opens the device `/dev/snd/pcmPreferredp` points to, for playback.
+    ///
     /// # Errors
     /// The failed `snd_pcm_open_preferred` (always on a host).
     pub fn open_preferred() -> Result<Self, QsaError> {
@@ -457,6 +599,10 @@ impl PcmDevice {
             device,
         })
     }
+
+    /// Sets the parameters of `config` (`snd_pcm_plugin_params`), prepares
+    /// the channel, and reads back what was set up.
+    ///
     /// # Errors
     /// The failed call. A refusal of the parameters carries the library's
     /// `why_failed` value in its text when it set one.
@@ -501,6 +647,10 @@ impl PcmDevice {
             max_fragment_bytes: setup.max_fragment_bytes,
         })
     }
+
+    /// Makes the channel take data again (after an underrun, or after its
+    /// audio was played out).
+    ///
     /// # Errors
     /// The failed `snd_pcm_plugin_prepare`.
     pub fn prepare(&self) -> Result<(), QsaError> {
@@ -508,11 +658,18 @@ impl PcmDevice {
         let code = unsafe { sys::snd_pcm_plugin_prepare(self.handle, CHANNEL_PLAYBACK) };
         check("snd_pcm_plugin_prepare", code)
     }
+
+    /// Writes PCM in the configured format. Waits while the buffer is full.
+    /// Returns the bytes taken: fewer than `data.len()`, or a negative
+    /// value, when the channel is not in a state to take data.
     #[must_use]
     pub fn write(&self, data: &[u8]) -> isize {
-        // SAFETY: an open handle. `data` is live for the call.
+        // SAFETY: an open handle; `data` is live for the call.
         unsafe { sys::snd_pcm_plugin_write(self.handle, data.as_ptr().cast(), data.len()) }
     }
+
+    /// Reads the channel's status.
+    ///
     /// # Errors
     /// The failed `snd_pcm_plugin_status`.
     pub fn status(&self) -> Result<DeviceStatus, QsaError> {
@@ -530,6 +687,11 @@ impl PcmDevice {
             plugin_held_bytes: status.plugin_held_bytes,
         })
     }
+
+    /// Plays everything written so far, an incomplete last fragment
+    /// included, and returns when it has been played
+    /// (`snd_pcm_plugin_flush`).
+    ///
     /// # Errors
     /// The failed `snd_pcm_plugin_flush`.
     pub fn play_out(&self) -> Result<(), QsaError> {
@@ -537,6 +699,10 @@ impl PcmDevice {
         let code = unsafe { sys::snd_pcm_plugin_flush(self.handle, CHANNEL_PLAYBACK) };
         check("snd_pcm_plugin_flush", code)
     }
+
+    /// Stops playback and throws away what has not been played
+    /// (`snd_pcm_plugin_playback_drain`).
+    ///
     /// # Errors
     /// The failed `snd_pcm_plugin_playback_drain`.
     pub fn discard(&self) -> Result<(), QsaError> {
@@ -545,6 +711,7 @@ impl PcmDevice {
         check("snd_pcm_plugin_playback_drain", code)
     }
 }
+
 impl Drop for PcmDevice {
     fn drop(&mut self) {
         // SAFETY: the handle this value opened, closed once.
@@ -553,19 +720,26 @@ impl Drop for PcmDevice {
         }
     }
 }
+
+/// The name of one mixer group (`snd_mixer_gid_t`).
 #[derive(Clone, Copy)]
 pub struct GroupId(RawGroupId);
+
 impl GroupId {
+    /// The group's name, for example `PCM` or `Master`.
     #[must_use]
     pub fn name(&self) -> String {
         let end = self.0.name.iter().position(|&b| b == 0).unwrap_or(32);
         String::from_utf8_lossy(&self.0.name[..end]).into_owned()
     }
+
+    /// The group's index among groups of the same name.
     #[must_use]
     pub fn index(&self) -> i32 {
         self.0.index
     }
 }
+
 impl fmt::Debug for GroupId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GroupId")
@@ -574,39 +748,60 @@ impl fmt::Debug for GroupId {
             .finish()
     }
 }
+
+/// One mixer group as `snd_mixer_group_read` returned it. Change its
+/// volume values, then give it to [`Mixer::write_group`].
 #[derive(Clone, Copy)]
 pub struct Group(RawGroup);
+
 impl Group {
+    /// The group's name.
     #[must_use]
     pub fn id(&self) -> GroupId {
         GroupId(self.0.gid)
     }
+
+    /// `SND_MIXER_GRPCAP_*` bits; see [`GROUP_CAP_VOLUME`].
     #[must_use]
     pub fn caps(&self) -> u32 {
         self.0.caps
     }
+
+    /// The voices the group has, one bit per `SND_MIXER_CHN_*` index.
     #[must_use]
     pub fn channels(&self) -> u32 {
         self.0.channels
     }
+
+    /// The lowest and the highest volume value.
     #[must_use]
     pub fn range(&self) -> (i32, i32) {
         (self.0.min, self.0.max)
     }
+
+    /// The volume value of the voice `channel` (`SND_MIXER_CHN_*`, below
+    /// [`GROUP_MAX_VOICES`]); `None` for a larger index.
     #[must_use]
     pub fn volume(&self, channel: usize) -> Option<u32> {
         self.0.volume.get(channel).copied()
     }
+
+    /// Sets the volume value of the voice `channel`. Does nothing for an
+    /// index of [`GROUP_MAX_VOICES`] or more. The value is not clamped to
+    /// [`range`](Self::range).
     pub fn set_volume(&mut self, channel: usize, value: u32) {
         if let Some(slot) = self.0.volume.get_mut(channel) {
             *slot = value;
         }
     }
+
+    /// The `SND_MIXER_CHN_*` bits of the muted voices.
     #[must_use]
     pub fn mute(&self) -> u32 {
         self.0.mute
     }
 }
+
 impl fmt::Debug for Group {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Group")
@@ -618,10 +813,16 @@ impl fmt::Debug for Group {
             .finish_non_exhaustive()
     }
 }
+
+/// One open mixer handle (`snd_mixer_open`). Closed on drop. Not `Send`.
 pub struct Mixer {
     handle: *mut c_void,
 }
+
 impl Mixer {
+    /// Opens the mixer of `card` and `device` (0 and 0: the first card's
+    /// first mixer).
+    ///
     /// # Errors
     /// The failed `snd_mixer_open` (always on a host).
     pub fn open(card: i32, device: i32) -> Result<Self, QsaError> {
@@ -634,6 +835,9 @@ impl Mixer {
         }
         Ok(Self { handle })
     }
+
+    /// The mixer's groups, in the order the library lists them.
+    ///
     /// # Errors
     /// The failed `snd_mixer_groups`.
     pub fn group_ids(&self) -> Result<Vec<GroupId>, QsaError> {
@@ -642,7 +846,7 @@ impl Mixer {
             let mut groups: RawGroups = zeroed();
             groups.groups_size = i32::try_from(list.len()).unwrap_or(i32::MAX);
             groups.list = list.as_mut_ptr();
-            // SAFETY: an open handle. `list` holds `groups_size` entries
+            // SAFETY: an open handle; `list` holds `groups_size` entries
             // and lives for the call.
             let code = unsafe { sys::snd_mixer_groups(self.handle, &raw mut groups) };
             check("snd_mixer_groups", code)?;
@@ -655,6 +859,9 @@ impl Mixer {
             list.resize(filled + over, zeroed());
         }
     }
+
+    /// Reads the group `id`.
+    ///
     /// # Errors
     /// The failed `snd_mixer_group_read`.
     pub fn read_group(&self, id: &GroupId) -> Result<Group, QsaError> {
@@ -666,6 +873,9 @@ impl Mixer {
         check("snd_mixer_group_read", code)?;
         Ok(Group(group))
     }
+
+    /// Writes `group` (its volume values and mute bits) back to the mixer.
+    ///
     /// # Errors
     /// The failed `snd_mixer_group_write`.
     pub fn write_group(&self, group: &Group) -> Result<(), QsaError> {
@@ -676,6 +886,7 @@ impl Mixer {
         check("snd_mixer_group_write", code)
     }
 }
+
 impl Drop for Mixer {
     fn drop(&mut self) {
         // SAFETY: the handle this value opened, closed once.
@@ -684,9 +895,11 @@ impl Drop for Mixer {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn device_state_values_round_trip() {
         for raw in [0, 1, 2, 3, 4, 5, 10, 10_000, 10_001, 77] {
@@ -695,6 +908,7 @@ mod tests {
         assert_eq!(DeviceState::from_raw(4), DeviceState::Underrun);
         assert_eq!(DeviceState::from_raw(3).to_string(), "running");
     }
+
     #[test]
     fn calls_fail_off_qnx() {
         if cfg!(target_os = "nto") {
@@ -710,6 +924,9 @@ mod tests {
         let failure = Mixer::open(0, 0).err().expect("no libasound here");
         assert_eq!(failure.call, "snd_mixer_open");
     }
+
+    /// Takes the address of every library call, so the target test binary
+    /// imports each one and the link proves `libasound.so` has them.
     #[cfg(target_os = "nto")]
     #[test]
     fn links_every_call() {
@@ -732,6 +949,7 @@ mod tests {
         ];
         assert!(calls.iter().all(|call| !call.is_null()));
     }
+
     #[test]
     fn group_volume_and_name() {
         let mut raw: RawGroup = zeroed();

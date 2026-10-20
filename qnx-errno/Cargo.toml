@@ -3,7 +3,7 @@ name = "qnx-errno"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Error number access without the Rust standard library"
+description = "errno for QNX 6.5 code without std: read and set it through __get_errno_ptr"
 
 [lib]
 name = "qnx_errno"

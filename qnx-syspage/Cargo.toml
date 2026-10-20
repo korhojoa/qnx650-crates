@@ -3,9 +3,11 @@ name = "qnx-syspage"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "CPU and memory information from the QNX system page"
+description = "The QNX 6.5 system page, read safely: CPU count, per-CPU cpuinfo (CPU id / ARM MIDR, MHz, flags, model name), asinfo memory ranges and total RAM"
 
 [lib]
 name = "qnx_syspage"
 
+# #![no_std], no allocation, no dependencies. `_syspage_ptr` is a data
+# symbol of libc.so.3 on QNX 6.5.
 [dependencies]

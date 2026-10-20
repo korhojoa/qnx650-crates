@@ -2,14 +2,20 @@
 name = "hidkbm-ring"
 version = "0.2.0"
 edition = "2021"
-description = "Shared HID event rings and PPS notifications"
+description = "The HID keyboard/mouse/touch event rings (/hidkbm-*, the hidinput_shm.h layout): producer and reader, with a PPS counter that wakes readers instead of making them poll."
 license = "Apache-2.0"
 
+# usbtouchd uses it without the `shm` feature (no dependencies at all). The
+# daemons and readers use `shm`. Since 0.2.0 that feature takes shm_open and
+# mmap from qnx-shm and declares open, read and poll itself (src/sys.rs,
+# values in LAYOUT.md), so no crates.io crate and no libc patch is needed.
 
 [lib]
 path = "src/lib.rs"
 
 [features]
+# Producer, Reader and wait_any (shared memory and poll).
+# Without it: the layout's constants, Event, the PPS paths and Wake only.
 default = ["shm"]
 shm = ["dep:qnx-shm"]
 

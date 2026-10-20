@@ -3,8 +3,10 @@ name = "qnx-resmgr"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "QNX resource manager interfaces and message layouts"
+description = "The QNX 6.5 resource manager framework: dispatch_create, resmgr_attach and the resmgr loop, the iofunc defaults, and the context, function table, attribute and I/O message layouts pinned to the SDP headers"
 
+# #![no_std]. The framework lives in libc.so.3 on QNX 6.5, so nothing extra
+# is linked. A host build gets stand-ins that fail with ENOSYS.
 [lib]
 name = "qnx_resmgr"
 

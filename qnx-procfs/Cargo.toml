@@ -3,8 +3,11 @@ name = "qnx-procfs"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Process information from the QNX process file system"
+description = "Process information from the QNX 6.5 /proc file system: devctl(DCMD_PROC_INFO) on /proc/<pid>/as, with the debug_process_t layout pinned"
 
+# #![no_std], no allocation. open, devctl and close live in libc.so.3 on
+# QNX 6.5, so nothing extra is linked. A host build has no devctl and gets
+# a stand-in that fails with ENOSYS.
 [lib]
 name = "qnx_procfs"
 

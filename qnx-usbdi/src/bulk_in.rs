@@ -1,4 +1,46 @@
+// SPDX-License-Identifier: Apache-2.0
+//! `BulkIn`: a bulk IN pipe with a ring of armed URBs.
+//!
+//! The read counterpart of [`crate::bulk::BulkOut`], built exactly like
+//! [`crate::intr::IntrIn`] (its doc is the reference) but on a bulk
+//! endpoint and with a caller-chosen buffer size rather than the
+//! endpoint's `wMaxPacketSize`. Every slot is queued on the pipe at open
+//! (`URB_DIR_IN | URB_SHORT_XFER_OK`, so a transfer shorter than the
+//! buffer completes `CMP` with its own length), the completion callback
+//! records the slot's status and length on a done queue and signals the
+//! condvar, and [`BulkIn::read`] pops the oldest completion, copies the
+//! bytes out of the slot's `usbd_alloc` buffer and re-arms the slot.
+//!
+//! Ownership, the callback's cancellation guard, the drain at teardown
+//! and the leak path are the bulk module's (its doc is the reference):
+//! the URBs and buffers live in one `Arc<BulkInState>`, each submission
+//! carries `Arc::into_raw(clone)`, the callback reclaims it, and the
+//! state is freed only on the caller's thread after `usbd_close_pipe`
+//! answered `EOK` and the strong count was seen to be one. A slot's
+//! buffer is written by io-usb only while the slot is armed and read by
+//! `read` only after its completion was popped and before it is re-armed,
+//! so the two never overlap.
+//!
+//! A `read` that is waiting can be ended from another thread through a
+//! [`BulkInWaker`] ([`BulkIn::waker`]): a consumer whose one USB thread
+//! both reads and writes hands the waker to the threads that produce
+//! outgoing data, and its `read` returns when one of them has something to
+//! send instead of at a short poll timeout. For that the bookkeeping mutex
+//! and the condvar live in their own `Arc<RingWait>`, apart from the URBs
+//! and buffers; the waker holds that `Arc` and nothing else, so it adds no
+//! reference to `BulkInState` and the teardown above is unchanged
+//! (`RingWait` has the argument).
+//!
 //! Copyright 2026. Licensed under the Apache License, Version 2.0.
+
+use core::ffi::c_void;
+use core::fmt;
+use core::mem::ManuallyDrop;
+use std::collections::VecDeque;
+use std::rc::Rc;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
+
 use crate::bulk::{judge, wait_last_reference, STOP_SLICE_MS};
 use crate::cancel::CancelGuard;
 use crate::clock;
@@ -10,32 +52,50 @@ use crate::ffi::{
 };
 use crate::sys;
 use crate::{stop, Error, Result};
-use core::ffi::c_void;
-use core::fmt;
-use core::mem::ManuallyDrop;
-use std::collections::VecDeque;
-use std::rc::Rc;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+
+/// Ring depth when the caller has no opinion: enough queued that a
+/// transfer landing while the previous one is copied out is not refused.
 pub const DEFAULT_SLOTS: usize = 4;
+
+/// Slot size when the caller has no opinion: one Android Auto frame's
+/// worth (the framing layer's 16 KiB cap).
 pub const DEFAULT_SLOT_BYTES: usize = 16 * 1024;
+
+/// Timeout of the `CLEAR_FEATURE(ENDPOINT_HALT)` fallback in [`BulkIn::reset`].
 pub const CLEAR_HALT_TIMEOUT_MS: u32 = 1000;
+
+/// Bound of the teardown drain.
 const DRAIN_TIMEOUT_MS: u32 = 1000;
+
+/// Counters kept since the pipe was opened.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BulkInStats {
+    /// URBs `usbd_io` accepted.
     pub urbs: u64,
+    /// Bytes the completed URBs carried.
     pub bytes: u64,
+    /// Completions that were not `CMP`, plus submissions `usbd_io` refused.
     pub failures: u64,
+    /// Longest arm-to-completion time seen, in milliseconds (idle time on
+    /// the device counts, so this is not a busy-device latency figure).
     pub max_latency_ms: u64,
+    /// URBs armed and not yet completed.
     pub in_flight: usize,
+    /// Completions popped by `read`.
     pub reports: u64,
+    /// `read` waits a [`BulkInWaker`] ended (each returned
+    /// [`Error::Timeout`] before its deadline). Wakes that coalesced
+    /// count once.
     pub wakes: u64,
 }
+
 #[derive(Clone, Copy, Debug, Default)]
 struct SlotBook {
     armed: bool,
     submitted_ms: u64,
 }
+
+/// One completion, in the order the event thread delivered them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Done {
     idx: usize,
@@ -43,13 +103,18 @@ struct Done {
     alen: u32,
     latency_ms: u64,
 }
+
 #[derive(Debug, Default)]
 struct Book {
     slots: Vec<SlotBook>,
     done: VecDeque<Done>,
     stats: BulkInStats,
+    /// A [`BulkInWaker::wake`] no `read` has answered yet. Set and taken
+    /// under the mutex the reader waits with, so a wake between the
+    /// reader's check and its condvar wait cannot be missed.
     wake: bool,
 }
+
 impl Book {
     fn new(slots: usize) -> Book {
         Book {
@@ -59,9 +124,11 @@ impl Book {
             wake: false,
         }
     }
+
     fn idle(&self) -> bool {
         self.stats.in_flight == 0
     }
+
     fn arm(&mut self, idx: usize, now_ms: u64) {
         if let Some(slot) = self.slots.get_mut(idx) {
             slot.armed = true;
@@ -70,6 +137,8 @@ impl Book {
             self.stats.urbs += 1;
         }
     }
+
+    /// `usbd_io` refused the URB: the slot never went out.
     fn unarm(&mut self, idx: usize) {
         if let Some(slot) = self.slots.get_mut(idx) {
             slot.armed = false;
@@ -78,6 +147,10 @@ impl Book {
             self.stats.failures += 1;
         }
     }
+
+    /// Slots `rearm` may submit: not in flight, and no completion of theirs
+    /// waiting in `done`. A queued slot is re-armed by the `read` that pops
+    /// it; arming it here as well would submit its URB twice.
     fn disarmed(&self) -> Vec<usize> {
         self.slots
             .iter()
@@ -86,6 +159,8 @@ impl Book {
             .map(|(i, _)| i)
             .collect()
     }
+
+    /// Record a completion and queue it for `read`.
     fn complete(&mut self, idx: usize, (status, alen): (u32, u32), now_ms: u64) -> Done {
         let slot = self.slots.get(idx).copied().unwrap_or_default();
         if let Some(s) = self.slots.get_mut(idx) {
@@ -109,10 +184,39 @@ impl Book {
         done
     }
 }
+
+/// What a reader waits on: the bookkeeping and the condvar every change
+/// to it signals. It is the one part of the ring a [`BulkInWaker`] can
+/// reach, and it is kept in its own `Arc` for that reason.
+///
+/// Why the teardown in `Drop for BulkIn` is the same with wakers alive:
+///
+/// - A waker holds an `Arc<RingWait>`, never an `Arc<BulkInState>`, so
+///   `Arc::strong_count` of the ring counts this side and the completion
+///   callbacks only, as before. `wait_last_reference` cannot be held up
+///   by a waker, and the last reference to `BulkInState` (the URBs and
+///   the `usbd_alloc` buffers) is always dropped by `Drop for BulkIn` on
+///   the caller's thread or leaked there; a waker has no path to it,
+///   whichever thread it runs or is dropped on.
+/// - A `wake` during the teardown takes the mutex for one store and a
+///   `notify_all`. The drain (`wait_idle`) wakes, sees URBs still in
+///   flight and waits on with what is left of its bound; the pending flag
+///   is never read again.
+/// - A `wake` after the `BulkIn` is gone sets the flag in a `RingWait`
+///   only wakers still hold: nothing waits on it and nothing reads it.
+///   The leak path keeps the ring's own reference, so the same holds
+///   there.
+/// - The `RingWait` itself is freed by whoever drops its last `Arc`,
+///   possibly a waker on another thread after the `BulkIn` is gone. It
+///   holds a mutex, a condvar, a `Vec` and a `VecDeque` of plain values
+///   from the process allocator: no libusbdi call, no URB, no buffer, so
+///   the rule that nothing is freed into libusbdi's pools off the
+///   caller's thread is not touched.
 struct RingWait {
     book: Mutex<Book>,
     cv: Condvar,
 }
+
 impl RingWait {
     fn new(slots: usize) -> RingWait {
         RingWait {
@@ -120,9 +224,25 @@ impl RingWait {
             cv: Condvar::new(),
         }
     }
+
     fn lock(&self) -> MutexGuard<'_, Book> {
         self.book.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// The wait inside [`BulkIn::read`]: the oldest completion, or the
+    /// reason there is none. Checked in this order under the mutex, before
+    /// every condvar wait: a queued completion (it always wins, and a
+    /// pending wake then stays pending), `gone()` with nothing in flight,
+    /// `stopped()`, a pending wake (taken, counted, reported as
+    /// [`Error::Timeout`]), the deadline. The condvar wait is sliced at
+    /// [`STOP_SLICE_MS`] for the stop flag alone, which a signal handler
+    /// stores without a notify; a completion and a wake both notify, so
+    /// neither waits for a slice to end.
+    ///
+    /// `gone` and `stopped` are parameters so that the host tests can run
+    /// this wait: no `Device` exists there, and the process-wide stop
+    /// flag, once set by the one test that sets it, would end every wait
+    /// of the tests running beside it.
     fn wait_done(
         &self,
         timeout_ms: u32,
@@ -165,39 +285,74 @@ impl RingWait {
         }
     }
 }
+
+/// Ends a [`BulkIn::read`] wait from another thread. `Send`, `Sync` and
+/// `Clone`; made by [`BulkIn::waker`], and every clone acts on the same
+/// pipe.
+///
+/// It may outlive its `BulkIn` and may be dropped on any thread: it owns
+/// a share of the ring's bookkeeping only, never the URBs, the buffers or
+/// a reference the teardown counts.
 #[derive(Clone)]
 pub struct BulkInWaker {
     wait: Arc<RingWait>,
 }
+
 impl BulkInWaker {
+    /// End the `read` that is waiting on the pipe, or, when none is, the
+    /// next one: that `read` returns [`Error::Timeout`] without waiting
+    /// for its deadline, unless a completed transfer is queued, which it
+    /// returns instead while the wake stays pending for the `read` after.
+    /// The rule is in [`BulkIn::read`].
+    ///
+    /// Wakes do not add up: any number of calls before a `read` answers
+    /// them end one wait. The call takes the ring's mutex for one store
+    /// and a notify, never blocks on a transfer and writes no log line (it
+    /// runs once per outgoing event on the caller's thread; the `read` it
+    /// ends logs it at verbosity 1). After the `BulkIn` is dropped it
+    /// does nothing.
     pub fn wake(&self) {
         let mut book = self.wait.lock();
         book.wake = true;
+        // Under the mutex, as the completion callback does: the reader is
+        // either before its check of the flag (and will see it) or inside
+        // the condvar wait (and is notified), never in between.
         self.wait.cv.notify_all();
         drop(book);
     }
 }
+
 impl fmt::Debug for BulkInWaker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BulkInWaker").finish_non_exhaustive()
     }
 }
+
+/// Everything the completion callback may touch (see the bulk module's
+/// `RingState`). The `Book` and the condvar are reached through `wait`
+/// (see [`RingWait`] for why they have an `Arc` of their own).
 pub(crate) struct BulkInState {
     sys: Vec<sys::SlotSys>,
     wait: Arc<RingWait>,
     slot_bytes: usize,
 }
-// SAFETY: The conditions for `sys` are the same as for `bulk::RingState` and `intr::InState`.
-// - `sys` stays unchanged after construction.
-// - io-usb writes a slot buffer between arm and completion.
-// - `BulkIn::read` has exclusive access through `&mut self`. It reads after completion leaves the done queue and before the next arm.
-// - The callback uses the mutex for `Book` and compares URB pointers.
-// - The caller thread frees URBs and buffers once after `EOK` from `usbd_close_pipe` and a strong count of one.
-// - `BulkInWaker` holds only `RingWait`. Its fields provide `Send + Sync` without an unsafe implementation.
-// - The waker changes one flag in `Book` with the mutex. It cannot access `sys` or the reference count.
+
+// SAFETY: as `bulk::RingState` and `intr::InState`: `sys` is never
+// mutated after construction; a slot's buffer is written by io-usb only
+// between its arm and its completion callback and read by `BulkIn::read`
+// (`&mut self` on a !Send/!Sync type) only after that completion was
+// popped from the done queue under the mutex and before the slot is
+// re-armed; the callback touches only the `Book` under the mutex and
+// compares URB pointers; the URBs and buffers are freed once, on the
+// caller's thread, after `usbd_close_pipe` returned `EOK` and the strong
+// count was seen to be one. A `BulkInWaker` on another thread holds the
+// `RingWait` alone (`Send + Sync` by its own fields, no `unsafe`): it
+// touches one flag of the `Book` under the mutex and can reach neither
+// `sys` nor this state's reference count.
 unsafe impl Send for BulkInState {}
 // SAFETY: as above.
 unsafe impl Sync for BulkInState {}
+
 impl BulkInState {
     fn new(slots: usize, slot_bytes: usize) -> Result<BulkInState> {
         let mut sys_slots = Vec::with_capacity(slots);
@@ -216,14 +371,21 @@ impl BulkInState {
             slot_bytes,
         })
     }
+
     fn lock(&self) -> MutexGuard<'_, Book> {
         self.wait.lock()
     }
+
+    /// A waker for this ring's reader: a clone of the `RingWait` handle,
+    /// nothing of the state itself.
     fn waker(&self) -> BulkInWaker {
         BulkInWaker {
             wait: Arc::clone(&self.wait),
         }
     }
+
+    /// Wait until no URB is in flight or `timeout_ms` passes (the teardown
+    /// drain; not interruptible, the state must not be freed under a URB).
     fn wait_idle(&self, timeout_ms: u32) -> Result<()> {
         let deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
         let mut book = self.lock();
@@ -242,6 +404,7 @@ impl BulkInState {
         Ok(())
     }
 }
+
 impl Drop for BulkInState {
     fn drop(&mut self) {
         crate::vlog!(
@@ -251,9 +414,13 @@ impl Drop for BulkInState {
         );
     }
 }
+
+/// The `usbd_io` completion callback: as `bulk::bulk_complete`, with the
+/// completion queued for `read` (as `intr::intr_complete`).
+///
 /// # Safety
 /// `handle` must be the pointer `Arc::into_raw` produced for this very
-/// submission. It is reclaimed exactly once here. `urb` is the URB
+/// submission; it is reclaimed exactly once here. `urb` is the URB
 /// io-usb completed.
 unsafe extern "C" fn bulk_in_complete(
     urb: *mut UsbdUrb,
@@ -266,7 +433,7 @@ unsafe extern "C" fn bulk_in_complete(
         return;
     }
     // SAFETY: handle is the Arc::into_raw pointer the arm passed for this
-    // URB (the contract above). This is its one matching from_raw.
+    // URB (the contract above); this is its one matching from_raw.
     let ring: Arc<BulkInState> =
         unsafe { Arc::from_raw(handle.cast_const().cast::<BulkInState>()) };
     let now = clock::now_ms();
@@ -299,12 +466,17 @@ unsafe extern "C" fn bulk_in_complete(
     drop(book);
     drop(ring);
 }
+
+/// A bulk IN pipe with its ring of armed URBs. `!Send`/`!Sync` (it shares
+/// the device's `Rc`); only the completion path crosses threads, and that
+/// is internal.
 pub struct BulkIn {
     ring: ManuallyDrop<Arc<BulkInState>>,
     pipe: sys::PipeSys,
     dev: Rc<DeviceShared>,
     ep: Endpoint,
 }
+
 impl BulkIn {
     pub(crate) fn open(
         dev: Rc<DeviceShared>,
@@ -360,14 +532,20 @@ impl BulkIn {
         }
         Ok(bulk_in)
     }
+
+    /// The endpoint this pipe was opened on.
     #[must_use]
     pub fn endpoint(&self) -> Endpoint {
         self.ep
     }
+
+    /// Bytes one slot holds: the most one `read` returns.
     #[must_use]
     pub fn slot_bytes(&self) -> usize {
         self.ring.slot_bytes
     }
+
+    /// Queue one slot on the pipe. The slot must be disarmed.
     fn arm(&self, idx: usize) -> Result<()> {
         let ring: &BulkInState = &self.ring;
         let Some(slot) = ring.sys.get(idx) else {
@@ -398,14 +576,22 @@ impl BulkIn {
             }
         }
     }
+
+    /// Arm every disarmed slot (all of them at open; after a failed
+    /// completion, the ones that failed). Returns how many are armed
+    /// after the call; the first refusal is logged and returned only when
+    /// nothing is armed at all.
+    ///
     /// # Errors
-    /// [`Error::Gone`]. [`Error::Errno`] when `usbd_io` refused and no
+    /// [`Error::Gone`]; [`Error::Errno`] when `usbd_io` refused and no
     /// slot is in flight.
     pub fn rearm(&mut self) -> Result<usize> {
         if self.dev.gone.is_set() {
             return Err(Error::Gone);
         }
         let mut first_err = None;
+        // The guard must be gone before `arm` takes the lock again (see
+        // the note in `intr::IntrIn::rearm`).
         let idle = self.ring.lock().disarmed();
         for idx in idle {
             if let Err(e) = self.arm(idx) {
@@ -418,6 +604,44 @@ impl BulkIn {
             _ => Ok(armed),
         }
     }
+
+    /// Wait, bounded by `timeout_ms`, for the oldest completed transfer,
+    /// copy it into `buf` (at most `buf.len()` bytes) and re-arm its slot.
+    /// A completion that was not `CMP` is returned as [`Error::Status`]
+    /// once and leaves its slot disarmed; the caller decides
+    /// ([`BulkIn::reset`] then [`BulkIn::rearm`] for a stall, giving up for
+    /// a removal). The wait ends early with [`Error::Interrupted`] when a
+    /// stop is requested ([`crate::stop`]) and with [`Error::Gone`] once
+    /// the device is removed and nothing is in flight any more.
+    ///
+    /// A [`BulkInWaker::wake`] from another thread also ends the wait:
+    /// `read` then returns [`Error::Timeout`] before `timeout_ms` has
+    /// passed. It is the existing "nothing completed" outcome on purpose,
+    /// with no variant of its own: a new one would break every exhaustive
+    /// `match` on [`Error`] in the crates that use this one, and a caller
+    /// that hands out a waker has to look at its own outgoing work after
+    /// every return of `read` anyway. With a waker in use a `Timeout` no
+    /// longer says that `timeout_ms` passed, so elapsed time is read from
+    /// a clock, not counted in timeouts. The rule between a wake and
+    /// data:
+    ///
+    /// - A completed transfer always wins. While the done queue holds one,
+    ///   `read` returns it and leaves the wake pending, so a wake can
+    ///   neither delay nor drop received data.
+    /// - A wake is never lost. It stays pending until a `read` finds no
+    ///   completion queued, and that `read` (the one waiting now, or the
+    ///   next one, whatever its `timeout_ms`, zero included) takes it and
+    ///   returns `Timeout` at once. A wake that arrived while `read` was
+    ///   returning data therefore costs one early `Timeout` later, and the
+    ///   caller, back in control after every return, has seen its outgoing
+    ///   work by then.
+    /// - Wakes coalesce: all the calls before that `read` end one wait.
+    /// - A removal or a stop request is reported first ([`Error::Gone`],
+    ///   [`Error::Interrupted`]) and leaves the wake pending.
+    ///
+    /// A caller that never takes a waker sees none of this: `Timeout`
+    /// still means the deadline.
+    ///
     /// # Errors
     /// As above, plus [`Error::Timeout`] when nothing completed in time or
     /// a wake ended the wait.
@@ -441,21 +665,34 @@ impl BulkIn {
         }
         Ok(n)
     }
+
+    /// `usbd_reset_pipe`, then the `CLEAR_FEATURE(ENDPOINT_HALT)` fallback
+    /// (as [`crate::bulk::BulkOut::reset`]). URBs in flight complete
+    /// `ABORTED` and come back through `read` as failures.
+    ///
     /// # Errors
-    /// [`Error::Gone`] when the device is gone.
-    /// The fallback error when the two methods fail.
+    /// [`Error::Gone`]; the fallback's error when both fail.
     pub fn reset(&mut self) -> Result<()> {
         self.dev.reset_pipe(&self.pipe, self.ep)
     }
+
+    /// The counters.
     #[must_use]
     pub fn stats(&self) -> BulkInStats {
         self.ring.lock().stats
     }
+
+    /// A handle another thread uses to end this pipe's [`BulkIn::read`]
+    /// wait ([`BulkInWaker::wake`]; the rule between a wake and data is in
+    /// `read`). Every call returns a handle on the same pending-wake flag,
+    /// as cloning one does. The handle may outlive this `BulkIn`; it holds
+    /// no URB, no buffer and no reference the teardown waits for.
     #[must_use]
     pub fn waker(&self) -> BulkInWaker {
         self.ring.waker()
     }
 }
+
 impl Drop for BulkIn {
     fn drop(&mut self) {
         let started = Instant::now();
@@ -492,9 +729,11 @@ impl Drop for BulkIn {
                 stats.bytes,
                 stats.failures
             );
-            // SAFETY: This thread holds the only state reference.
-            // The pipe is closed and no arm runs during `Drop`, so callbacks cannot take new references.
-            // This thread drops the state once before `usbd_detach` and `usbd_disconnect`.
+            // SAFETY: this side holds the only reference (checked just
+            // above), no callback can take a new one (the pipe is closed
+            // and no arm runs during drop), so the state is dropped
+            // exactly once, here, on the caller's thread, before
+            // usbd_detach and usbd_disconnect.
             unsafe { ManuallyDrop::drop(&mut self.ring) };
         } else {
             let left = self.ring.lock().stats.in_flight;
@@ -518,10 +757,12 @@ impl Drop for BulkIn {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ffi::{USBD_STATUS_CMP_ERR, USBD_STATUS_STALL};
+
     #[test]
     fn completions_queue_in_order_and_disarm_their_slot() {
         let mut b = Book::new(2);
@@ -542,17 +783,20 @@ mod tests {
         );
         assert!(b.idle());
     }
+
     #[test]
     fn a_queued_completion_is_not_offered_for_rearm() {
         let mut b = Book::new(2);
         b.arm(0, 0);
         b.arm(1, 0);
         b.complete(0, (USBD_STATUS_CMP_ERR | USBD_STATUS_STALL, 0), 1);
+        // Slot 0 is done but not read yet: rearm must leave it to `read`.
         assert_eq!(b.disarmed(), [] as [usize; 0]);
         let d = b.done.pop_front().expect("queued completion");
         assert_eq!(d.idx, 0);
         assert_eq!(b.disarmed(), vec![0]);
     }
+
     #[test]
     fn a_refused_arm_comes_back_out_of_the_counters() {
         let mut b = Book::new(1);
@@ -564,8 +808,10 @@ mod tests {
         );
         assert_eq!(b.disarmed(), vec![0]);
     }
+
     #[test]
     fn open_needs_a_bulk_in_endpoint() {
+        // Bulk OUT, interrupt IN and bulk IN, all checkable on the host.
         let bulk_out = Endpoint::new(7, 0x01, 0x02, 512, 0);
         let intr_in = Endpoint::new(7, 0x81, 0x03, 8, 10);
         let bulk_in = Endpoint::new(7, 0x81, 0x02, 512, 0);
@@ -575,6 +821,10 @@ mod tests {
         assert_eq!(DEFAULT_SLOTS, 4);
         assert_eq!(DEFAULT_SLOT_BYTES, 16 * 1024);
     }
+
+    /// A ring with no slots allocated (a host build can allocate none):
+    /// the `Book`, the condvar and the reference counts are all the wait,
+    /// the wake and the teardown gates read.
     fn ring(slots: usize) -> BulkInState {
         BulkInState {
             sys: Vec::new(),
@@ -582,9 +832,15 @@ mod tests {
             slot_bytes: 0,
         }
     }
+
+    /// `BulkIn::read`'s wait on a device that is present, with the stop
+    /// flag left out: `bulk::tests` sets the process-wide one, and it
+    /// would end the waits here at whatever point that test runs.
     fn wait(ring: &BulkInState, timeout_ms: u32) -> Result<Done> {
         ring.wait.wait_done(timeout_ms, || false, || false)
     }
+
+    /// What the completion callback does to the ring, minus the URB.
     fn complete(ring: &BulkInState, idx: usize, alen: u32) -> Done {
         let mut book = ring.lock();
         let done = book.complete(idx, (USBD_STATUS_CMP, alen), clock::now_ms());
@@ -592,6 +848,7 @@ mod tests {
         drop(book);
         done
     }
+
     #[test]
     fn the_waker_crosses_threads_and_clones() {
         fn send_sync_clone<T: Send + Sync + Clone>() {}
@@ -599,6 +856,11 @@ mod tests {
         let ring = ring(1);
         assert_eq!(format!("{:?}", ring.waker()), "BulkInWaker { .. }");
     }
+
+    /// A wake from another thread ends a wait that is already blocked,
+    /// and by its notify: the wake is made 50 ms into a 10 s wait, where
+    /// the condvar slice that exists for the stop flag still has 200 ms
+    /// to run, and the wait must be back in less than half a slice.
     #[test]
     fn a_wake_ends_a_blocked_wait_promptly() {
         let ring = ring(1);
@@ -622,11 +884,16 @@ mod tests {
         );
         assert_eq!(ring.lock().stats.wakes, 1);
         assert!(!ring.lock().wake);
+        // That wake is spent: the next wait runs to its deadline.
         let started = Instant::now();
         assert_eq!(wait(&ring, 60), Err(Error::Timeout));
         assert!(clock::elapsed_ms(started) >= 50);
         assert_eq!(ring.lock().stats.wakes, 1);
     }
+
+    /// With no wait in progress the wake is kept: it ends the next wait,
+    /// once, however many calls and clones made it, a zero-timeout wait
+    /// included.
     #[test]
     fn a_wake_before_a_wait_ends_the_next_wait_once_and_only_once() {
         let ring = ring(1);
@@ -642,6 +909,8 @@ mod tests {
         assert_eq!(wait(&ring, 60), Err(Error::Timeout));
         assert!(clock::elapsed_ms(started) >= 50);
         assert_eq!(ring.lock().stats.wakes, 1);
+        // A poll (timeout 0) takes a pending wake as well, and a poll
+        // without one is the plain timeout, not counted.
         waker.wake();
         assert_eq!(wait(&ring, 0), Err(Error::Timeout));
         assert_eq!(ring.lock().stats.wakes, 2);
@@ -649,6 +918,10 @@ mod tests {
         assert_eq!(ring.lock().stats.wakes, 2);
         assert_eq!(ring.lock().stats.reports, 0);
     }
+
+    /// Queued completions are returned first, all of them, with a wake
+    /// pending; the wake is not dropped by that and ends the first wait
+    /// that finds the queue empty.
     #[test]
     fn a_completion_wins_over_a_pending_wake_and_the_wake_is_kept() {
         let ring = ring(2);
@@ -672,6 +945,9 @@ mod tests {
         assert_eq!(wait(&ring, 60), Err(Error::Timeout));
         assert!(clock::elapsed_ms(started) >= 50);
     }
+
+    /// A completion that lands during the wait ends it with the data, as
+    /// it did before wakers existed, whether or not one is alive.
     #[test]
     fn a_completion_ends_a_blocked_wait_with_a_waker_alive() {
         let ring = Arc::new(ring(1));
@@ -689,6 +965,9 @@ mod tests {
         assert!((50..5000).contains(&took), "{took} ms");
         assert_eq!(ring.lock().stats.wakes, 0);
     }
+
+    /// A removal (with nothing in flight) and a stop request are reported
+    /// ahead of a pending wake and leave it pending.
     #[test]
     fn gone_and_stop_are_reported_before_a_pending_wake() {
         let ring = ring(1);
@@ -703,6 +982,8 @@ mod tests {
         );
         assert!(ring.lock().wake);
         assert_eq!(ring.lock().stats.wakes, 0);
+        // A removal with a URB still in flight is not `Gone` yet (its
+        // ABORTED completion is still to come), so the wake is answered.
         ring.lock().arm(0, clock::now_ms());
         assert_eq!(
             ring.wait.wait_done(10_000, || true, || false),
@@ -710,6 +991,10 @@ mod tests {
         );
         assert_eq!(ring.lock().stats.wakes, 1);
     }
+
+    /// The waker holds no reference to the ring: the ring is freed where
+    /// its own last reference is dropped with wakers still alive, and a
+    /// wake after that changes nothing anybody reads.
     #[test]
     fn a_wake_after_the_ring_is_gone_is_a_no_op() {
         let ring = Arc::new(ring(1));
@@ -717,6 +1002,7 @@ mod tests {
         let second = waker.clone();
         assert_eq!(Arc::strong_count(&ring), 1);
         assert_eq!(Arc::weak_count(&ring), 0);
+        // The ring's handle and the two wakers.
         assert_eq!(Arc::strong_count(&waker.wait), 3);
         let observer = Arc::downgrade(&ring);
         drop(ring);
@@ -732,9 +1018,19 @@ mod tests {
         waker.wake();
         assert_eq!(Arc::strong_count(&waker.wait), 1);
     }
+
+    /// The gates `Drop for BulkIn` passes before it frees the ring, in
+    /// its order and with its bounds, while another thread calls `wake`
+    /// without pause and a second waker is alive: the drain ends when the
+    /// last URB completes (a wake's notify with a URB in flight does not
+    /// end it), this side is seen as the last reference once the callback
+    /// released its clone, and the ring is freed by this thread's drop.
+    /// The pipe calls between the gates (`usbd_abort_pipe`,
+    /// `usbd_close_pipe`) need the target and are not part of this test.
     #[test]
     fn the_teardown_gates_pass_with_wakers_alive_and_waking() {
         use std::sync::atomic::{AtomicBool, Ordering};
+
         let ring = Arc::new(ring(1));
         let kept = ring.waker();
         let busy = ring.waker();
@@ -752,9 +1048,11 @@ mod tests {
             })
         };
         ring.lock().arm(0, clock::now_ms());
+        // The drain does not take a wake for a completion.
         let started = Instant::now();
         assert_eq!(ring.wait_idle(60), Err(Error::Timeout));
         assert!(clock::elapsed_ms(started) >= 50);
+        // The callback's clone of the ring, released after its notify.
         let callback = Arc::clone(&ring);
         let event_thread = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));
@@ -774,6 +1072,8 @@ mod tests {
         drop(ring);
         assert!(observer.upgrade().is_none());
         event_thread.join().unwrap();
+        // Wakes kept coming through all of it and still do, into a
+        // `RingWait` only the wakers hold.
         kept.wake();
         quit.store(true, Ordering::Release);
         assert!(waking.join().unwrap() > 0);

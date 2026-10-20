@@ -3,10 +3,11 @@ name = "qnx-mmio"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Device memory mappings and register access"
+description = "Device memory on QNX 6.5: I/O privilege (ThreadCtl), mmap_device_memory with RAII and bounds-checked volatile 32-bit register access, physical mappings (mmap64, mem_offset64), checked physical address and length types"
 
 [lib]
 name = "qnx_mmio"
 
+# #![no_std]. The calls live in libc.so.3 on QNX 6.5.
 [dependencies]
 qnx-errno = { path = "../qnx-errno" }
