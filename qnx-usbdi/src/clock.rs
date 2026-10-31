@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The one clock every log line and every deadline in the port reads.
 //!
-//! `T0` is set once by `init()` (the first statement of `dlotest::main`)
-//! or lazily by the first `now_ms()`, so a library caller that never calls
-//! `init()` still gets stamps that count from its first log line rather
-//! than a panic. `Instant` on the nto target is `CLOCK_MONOTONIC`
-//! (`time.h` line 105: `CLOCK_MONOTONIC 2`; NOT 4, which is
-//! `CLOCK_THREAD_CPUTIME_ID` and is what `qnx_mbox::now_ms` reads), and
-//! std's `Condvar` there is created with
-//! `pthread_condattr_setclock(CLOCK_MONOTONIC)`, so the bulk ring's
-//! condvar deadlines and these stamps share one clock: a logged
-//! completion and the timeout that would have fired can be lined up.
+//! `init()` sets `T0` once. The first `now_ms()` call also initializes it.
+//! A caller can thus use timestamps without an explicit initialization call.
+//! QNX `Instant` uses `CLOCK_MONOTONIC` (2).
+//! `CLOCK_THREAD_CPUTIME_ID` (4) measures processor time for one thread.
+//! Condition-variable deadlines also use `CLOCK_MONOTONIC`.
 //!
 //! `usbd_io`'s own `timeout_ms` is io-usb's timer in another process. It
 //! is never reported as a duration; every transfer logs the
@@ -26,9 +21,10 @@
 //! and `usbd_detach` until its event thread, back from the last
 //! completion callback, has decremented its own counters.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use core::fmt;
+#[cfg(not(target_os = "nto"))]
 use std::io::Write;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
@@ -41,11 +37,12 @@ static T0: OnceLock<Instant> = OnceLock::new();
 static LEVEL: AtomicU8 = AtomicU8::new(0);
 static LOG_SINK: OnceLock<fn(&str)> = OnceLock::new();
 
-/// Send each stamped line to an optional process logging function.
-/// Set the function before USB workers start. It must not call this logger.
+/// Add a process log callback before USB workers start.
+/// The callback receives the stamped line after the default output.
+/// It must not call this logger recursively.
 ///
 /// # Errors
-/// Returns the supplied function if a sink is already set.
+/// Returns the supplied callback if one is already installed.
 pub fn set_log_sink(sink: fn(&str)) -> core::result::Result<(), fn(&str)> {
     LOG_SINK.set(sink)
 }
@@ -130,10 +127,19 @@ pub fn format_stamp(ms: u64) -> String {
     format!("[{:04}.{:03}]", ms / 1000, ms % 1000)
 }
 
-/// Write one stamped line to stderr. A closed stderr is not a reason to
-/// panic inside a USB completion callback, so the write error is dropped.
+/// On QNX, write a stamped line to file descriptor 2 and slog.
+/// On other targets, write the line through the standard-error lock.
+/// Also pass it to the optional process callback. Output failure does not
+/// panic inside a USB completion callback.
 pub fn log(args: fmt::Arguments<'_>) {
     let line = format!("{} {args}", stamp());
+    #[cfg(target_os = "nto")]
+    qnx_slog::log::app_line(
+        qnx_slog::sys::SLOGC_PRIVATE_START,
+        qnx_slog::sys::SLOG_INFO,
+        format_args!("{line}"),
+    );
+    #[cfg(not(target_os = "nto"))]
     {
         let mut err = std::io::stderr().lock();
         let _ = writeln!(err, "{line}");
@@ -186,18 +192,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn installed_sink_receives_exact_stamped_line_and_cannot_be_replaced() {
+    fn installed_sink_receives_stamped_lines_and_cannot_be_replaced() {
         static RECORDS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         fn capture(line: &str) {
             RECORDS.lock().unwrap().push(line.to_owned());
         }
         assert!(set_log_sink(capture).is_ok());
         log(format_args!("owned callback marker"));
-        assert!(RECORDS
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|line| { line.starts_with('[') && line.ends_with("] owned callback marker") }));
+        assert_eq!(
+            RECORDS
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|line| {
+                    line.starts_with('[') && line.ends_with("] owned callback marker")
+                })
+                .count(),
+            1
+        );
         assert!(set_log_sink(capture).is_err());
     }
 

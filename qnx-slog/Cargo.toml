@@ -1,8 +1,7 @@
 [package]
 name = "qnx-slog"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
-publish = false
 license = "MIT OR Apache-2.0"
 description = "slog logging for QNX 6.5 code on the MIB2 head unit: libraries injected into vendor processes and stand-alone programs"
 

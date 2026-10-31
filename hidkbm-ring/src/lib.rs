@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 qnx650-crates contributors.
 //! HID event rings for USB, Bluetooth, gamepads and touch input.
 //! Each producer uses one shared-memory object with this 2064-byte layout:
 //!
@@ -22,9 +23,9 @@
 //! `/ramdisk/pps` (the MIB2 unit), else `/pps` (the alternate QNX PPS root).
 //! The producer writes `live::1` when it starts and `live::0` when it leaves.
 //! A reader trusts the object only while it says `live::1`: without a PPS
-//! server, or with a producer that does not publish, the ring works as
-//! before and the reader looks every [`FALLBACK_INTERVAL`] (every
-//! [`ABSENT_INTERVAL`] while the ring is missing).
+//! server, the reader uses periodic reads. A producer without PPS notifications
+//! also uses this path. The reader waits for [`FALLBACK_INTERVAL`] between reads.
+//! It uses [`ABSENT_INTERVAL`] while the ring is missing.
 //!
 //! Without the default `shm` feature the crate is only this: the layout
 //! ([`Shm`], [`Event`], the constants), the PPS paths and [`Wake`], with no
@@ -32,9 +33,7 @@
 //! use. The `shm` feature adds `qnx-shm` and
 //! its own `open`/`read`/`poll` declarations (`LAYOUT.md`).
 //!
-//! Readers that are driven by their own frame loop (the SDL input module)
-//! need no wake and keep reading the ring as they do; the layout does not
-//! change.
+//! Readers with an application frame loop can read the ring without a PPS wake.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -78,7 +77,7 @@ const RING_U32: u32 = 256;
 const _: () = assert!(RING_U32 as usize == RING);
 
 /// How often a reader looks at a live ring whose producer does not publish
-/// (no PPS server, or a producer built before the PPS wake).
+/// (no PPS server, or a producer without PPS notifications).
 pub const FALLBACK_INTERVAL: Duration = Duration::from_millis(10);
 /// How often a reader looks for a missing ring whose PPS object does not
 /// say a publishing producer is live, to notice a producer that does not
@@ -203,7 +202,7 @@ pub struct Wake {
 
 impl Wake {
     /// Open (and create) the PPS object of ring `name`. Never fails: without
-    /// a PPS server the ring works as before and [`Self::error`] says why
+    /// a PPS server the reader uses periodic reads. [`Self::error`] says why
     /// readers are not woken.
     #[must_use]
     pub fn open(name: &str) -> Wake {

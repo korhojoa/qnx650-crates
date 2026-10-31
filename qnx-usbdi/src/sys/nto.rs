@@ -17,7 +17,7 @@
 //! non-zero, which they stay until the event thread has come back from
 //! the last callback; both are therefore retried on `EBUSY`, bounded.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use core::ffi::{c_int, c_void};
 use core::ptr;
@@ -190,6 +190,11 @@ pub(crate) struct DeviceSys {
 }
 
 impl DeviceSys {
+    pub(crate) fn reset(&self) -> Result<()> {
+        // SAFETY: dev remains attached for the lifetime of this owner.
+        check(unsafe { ffi::usbd_reset_device(self.dev) })
+    }
+
     pub(crate) fn device_descriptor(&self) -> UsbdDeviceDescriptor {
         *self.dd
     }

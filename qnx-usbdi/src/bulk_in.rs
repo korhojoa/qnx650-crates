@@ -31,7 +31,7 @@
 //! reference to `BulkInState` and the teardown above is unchanged
 //! (`RingWait` has the argument).
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use core::ffi::c_void;
 use core::fmt;
@@ -158,6 +158,12 @@ impl Book {
             .filter(|&(i, s)| !s.armed && !self.done.iter().any(|d| d.idx == i))
             .map(|(i, _)| i)
             .collect()
+    }
+
+    // A callback can finish before submit returns. Its queued completion
+    // remains available even when no transfer is in flight.
+    fn pending(&self) -> usize {
+        self.stats.in_flight + self.done.len()
     }
 
     /// Record a completion and queue it for `read`.
@@ -578,13 +584,13 @@ impl BulkIn {
     }
 
     /// Arm every disarmed slot (all of them at open; after a failed
-    /// completion, the ones that failed). Returns how many are armed
-    /// after the call; the first refusal is logged and returned only when
-    /// nothing is armed at all.
+    /// completion, the ones that failed). Returns the number of transfers in flight
+    /// plus queued completions. The first refusal is returned only when
+    /// neither remains available.
     ///
     /// # Errors
     /// [`Error::Gone`]; [`Error::Errno`] when `usbd_io` refused and no
-    /// slot is in flight.
+    /// transfer or queued completion remains available.
     pub fn rearm(&mut self) -> Result<usize> {
         if self.dev.gone.is_set() {
             return Err(Error::Gone);
@@ -598,7 +604,7 @@ impl BulkIn {
                 first_err.get_or_insert(e);
             }
         }
-        let armed = self.ring.lock().stats.in_flight;
+        let armed = self.ring.lock().pending();
         match first_err {
             Some(e) if armed == 0 => Err(e),
             _ => Ok(armed),
@@ -762,6 +768,48 @@ impl Drop for BulkIn {
 mod tests {
     use super::*;
     use crate::ffi::{USBD_STATUS_CMP_ERR, USBD_STATUS_STALL};
+
+    #[cfg(not(target_os = "nto"))]
+    #[test]
+    fn public_open_and_rearm_keep_inline_completions_available() {
+        use crate::sys::host_test::{self, Fixture, Scenario};
+        let _serial = crate::host::tests::SERIAL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for refuse_second in [false, true] {
+            let fixture = Fixture::new(Scenario::Input { refuse_second });
+            let (_host, device) = host_test::device();
+            let slots = if refuse_second { 2 } else { 1 };
+            let endpoint = Endpoint::new(7, 0x81, 2, 8, 1);
+            let mut input = device
+                .open_bulk_in(endpoint, slots, 8)
+                .expect("an inline completion makes open usable");
+            assert_eq!(input.stats().in_flight, 0);
+            assert_eq!(
+                input.rearm(),
+                Ok(1),
+                "the queued report survives a later submission refusal"
+            );
+            let mut bytes = [0; 8];
+            assert_eq!(input.read(&mut bytes, 1), Ok(4));
+            assert_eq!(&bytes[..4], &[0x5a; 4]);
+            drop(input);
+            assert_eq!(fixture.snapshot().freed_slots, slots);
+        }
+    }
+
+    #[test]
+    fn completion_before_submit_returns_remains_available() {
+        let mut book = Book::new(2);
+        book.arm(0, 1);
+        book.complete(0, (USBD_STATUS_CMP, 4), 2);
+        book.arm(1, 2);
+        book.unarm(1);
+        assert_eq!(book.stats.in_flight, 0);
+        assert_eq!(book.pending(), 1);
+        assert_eq!(book.done.pop_front().unwrap().alen, 4);
+        assert_eq!(book.pending(), 0);
+    }
 
     #[test]
     fn completions_queue_in_order_and_disarm_their_slot() {

@@ -19,10 +19,8 @@ podman run --rm -v "$PWD:/w" -v "$SDP/target/qnx6/usr/include:/sdp:ro" -w /w \
 
 Each probe line is `const int NAME = (int)(EXPR);`, for example
 `const int off_ci_name = (int)offsetof(struct cpuinfo_entry, name);`.
-Measured for ARM. qnx-rpi's `abi-check.c` held `num_cpu`,
-`cpuinfo.entry_off` and `cpuinfo_entry.cpu` against the ARM and x86
-headers with the same results. Every field is a fixed-width type, and the
-one pointer (`alloc_checker`) is 32 bits on both QNX 6.5 targets.
+The ARM and x86 headers give the same offsets for these fields.
+Each field has a fixed-width type. The `alloc_checker` pointer is 32 bits on these QNX 6.5 targets.
 
 ## Structs
 

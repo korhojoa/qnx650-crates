@@ -17,9 +17,10 @@
 //! When `usbd_io` fails, or the transfer is still `INPROG` at the
 //! timeout, the pipe is aborted before the call returns, so the URB is
 //! not left queued on the host controller when the next write sets it up
-//! again.
+//! again. If abort fails, the pipe refuses later writes and resets.
+//! Teardown keeps the slot until the pipe closes.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use core::mem::ManuallyDrop;
 use std::rc::Rc;
@@ -86,6 +87,31 @@ fn check_len(len: usize, slot_bytes: usize) -> Result<u32> {
     u32::try_from(len).map_err(|_| Error::Errno(EINVAL))
 }
 
+#[derive(Default)]
+struct OutputState {
+    abort_error: Option<Error>,
+}
+
+impl OutputState {
+    fn ready(&self) -> Result<()> {
+        match &self.abort_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn with_slot<T>(&self, use_slot: impl FnOnce() -> T) -> Result<T> {
+        self.ready()?;
+        Ok(use_slot())
+    }
+
+    fn aborted(&mut self, result: &Result<()>) {
+        if let Err(error) = result {
+            self.abort_error = Some(error.clone());
+        }
+    }
+}
+
 /// An interrupt OUT pipe with its one URB. `!Send`/`!Sync` (it shares the
 /// device's `Rc`).
 pub struct IntrOut {
@@ -95,6 +121,7 @@ pub struct IntrOut {
     ep: Endpoint,
     slot_bytes: usize,
     stats: IntrOutStats,
+    state: OutputState,
 }
 
 impl IntrOut {
@@ -132,6 +159,7 @@ impl IntrOut {
             ep,
             slot_bytes,
             stats: IntrOutStats::default(),
+            state: OutputState::default(),
         };
         crate::log!(
             "usbdi: interrupt OUT endpoint {:#04x} (mps {}, interval {}) open",
@@ -169,20 +197,25 @@ impl IntrOut {
     /// `usbd_io` fails (the pipe is aborted first); [`Error::Timeout`] when
     /// the transfer is still in flight after `timeout_ms` (the pipe is
     /// aborted first); [`Error::Status`] when it completed other than `CMP`.
+    /// After an abort failure, later writes and resets return that error.
+    /// The caller must drop the pipe and open a new one.
     pub fn write(&mut self, data: &[u8], timeout_ms: u32) -> Result<()> {
         if self.dev.gone.is_set() {
             return Err(Error::Gone);
         }
         let len32 = check_len(data.len(), self.slot_bytes)?;
-        self.slot.fill(data);
         let started = Instant::now();
-        let sent = self.pipe.send_intr_out(&self.slot, len32, timeout_ms);
+        let sent = self.state.with_slot(|| {
+            self.slot.fill(data);
+            self.pipe.send_intr_out(&self.slot, len32, timeout_ms)
+        })?;
         let ms = clock::elapsed_ms(started);
         let result = match sent {
             Ok((status, _)) if status & USBD_URB_STATUS_MASK == USBD_STATUS_INPROG => {
                 // Still in flight at the timeout: end it before the slot is
                 // filled again.
                 let abort = self.pipe.abort();
+                self.state.aborted(&abort);
                 crate::log!(
                     "usbdi: intr OUT endpoint {:#04x} {len32} byte(s): still INPROG after {ms} ms (timeout {timeout_ms} ms); abort_pipe {abort:?}",
                     self.ep.address()
@@ -205,6 +238,7 @@ impl IntrOut {
             }
             Err(e) => {
                 let abort = self.pipe.abort();
+                self.state.aborted(&abort);
                 crate::log!(
                     "usbdi: intr OUT endpoint {:#04x} {len32} byte(s): usbd_io {e} after {ms} ms (timeout {timeout_ms} ms); abort_pipe {abort:?}",
                     self.ep.address()
@@ -223,6 +257,7 @@ impl IntrOut {
     /// # Errors
     /// [`Error::Gone`]; the fallback's error when both fail.
     pub fn reset(&mut self) -> Result<()> {
+        self.state.ready()?;
         self.dev.reset_pipe(&self.pipe, self.ep)
     }
 
@@ -236,9 +271,8 @@ impl IntrOut {
 impl Drop for IntrOut {
     fn drop(&mut self) {
         let started = Instant::now();
-        // No URB is in flight: every write waited for its transfer or
-        // aborted the pipe. The abort here is for a write that the
-        // abort itself failed to clear.
+        // A failed abort can leave the URB in flight. Keep its buffer
+        // unchanged until close proves that the native reference is gone.
         if let Err(e) = self.pipe.abort() {
             crate::log!(
                 "usbdi: intr OUT teardown: abort_pipe(endpoint {:#04x}) failed: {e}",
@@ -272,6 +306,89 @@ impl Drop for IntrOut {
 mod tests {
     use super::*;
     use crate::ffi::{USBD_STATUS_ABORTED, USBD_STATUS_CMP_ERR, USBD_STATUS_STALL};
+
+    #[cfg(not(target_os = "nto"))]
+    #[test]
+    fn public_write_quarantines_the_real_slot_after_abort_failure() {
+        use crate::ffi::{EBUSY, EIO};
+        use crate::sys::host_test::{self, Fixture, Scenario};
+        let _serial = crate::host::tests::SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for send_error in [false, true] {
+            let fixture = Fixture::new(Scenario::Output { send_error });
+            let (_host, device) = host_test::device();
+            let mut output = device.open_intr_out(Endpoint::new(7, 1, 3, 8, 1)).unwrap();
+            let first_error = if send_error {
+                Error::Errno(EIO)
+            } else {
+                Error::Timeout
+            };
+            assert_eq!(output.write(&[1, 2, 3, 4], 1), Err(first_error));
+            assert_eq!(fixture.snapshot().aborts, 1);
+            for _ in 0..2 {
+                let result = output.write(&[9, 9, 9, 9], 1);
+                let after = fixture.snapshot();
+                assert_eq!(
+                    after.bytes,
+                    [1, 2, 3, 4],
+                    "a later public write cannot change pending DMA bytes"
+                );
+                assert_eq!(after.fills, 1);
+                assert_eq!(after.submissions, 1);
+                assert_eq!(result, Err(Error::Errno(EBUSY)));
+                assert_eq!(output.reset(), Err(Error::Errno(EBUSY)));
+                assert_eq!(
+                    fixture.snapshot().resets,
+                    1,
+                    "only open performed pipe hygiene"
+                );
+            }
+            drop(output);
+            assert_eq!(fixture.snapshot().closes, 1);
+            assert_eq!(fixture.snapshot().freed_slots, 1);
+        }
+    }
+
+    #[test]
+    fn abort_failure_prevents_later_buffer_reuse() {
+        let mut state = OutputState::default();
+        let mut buffer = [0u8; 4];
+        let mut submissions = 0;
+        state
+            .with_slot(|| {
+                buffer.fill(1);
+                submissions += 1;
+            })
+            .unwrap();
+        state.aborted(&Ok(()));
+        state
+            .with_slot(|| {
+                buffer.fill(2);
+                submissions += 1;
+            })
+            .unwrap();
+        state.aborted(&Err(Error::Timeout));
+        for _ in 0..2 {
+            let blocked = state.with_slot(|| {
+                buffer.fill(3);
+                submissions += 1;
+            });
+            assert_eq!(blocked, Err(Error::Timeout));
+            assert_eq!(buffer, [2; 4], "pending DMA bytes must stay unchanged");
+            assert_eq!(submissions, 2, "the old URB must not be submitted again");
+            assert_eq!(state.ready(), Err(Error::Timeout), "reset stays blocked");
+            state.aborted(&Ok(()));
+        }
+        let reopened = OutputState::default();
+        reopened
+            .with_slot(|| {
+                buffer.fill(4);
+                submissions += 1;
+            })
+            .unwrap();
+        assert_eq!(submissions, 3);
+    }
 
     #[test]
     fn judge_needs_cmp_only() {

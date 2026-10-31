@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 qnx650-crates contributors.
 //! Joinable workers with an explicit wake path, and C-callback containment.
 //!
 //! Nothing here is QNX-specific except the log line of a late join, which
@@ -176,8 +177,7 @@ impl Stopped {
 /// A worker thread that is always joined, and always has a way to be
 /// woken out of whatever it blocks in.
 ///
-/// There is deliberately no `detach()`. The C code this replaces could
-/// detach, and did, and that is what made its shutdown impossible.
+/// The worker joins its thread before it releases the thread state.
 pub struct Worker {
     handle: Option<JoinHandle<()>>,
     shutdown: Shutdown,
@@ -298,6 +298,9 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
+        if self.handle.is_none() {
+            return;
+        }
         // Signalled, woken and joined even on an early return or an
         // unwind, so a worker can never outlive the state it borrows.
         let _ = self.stop_inner(JOIN_DEADLINE);
@@ -327,7 +330,33 @@ mod tests {
     use std::sync::atomic::AtomicU32;
     use std::sync::{Condvar, Mutex};
 
-    /// The polling case the original design assumed was the only case.
+    #[test]
+    fn each_stop_path_wakes_once() {
+        for mode in 0..3 {
+            let count = Arc::new(AtomicU32::new(0));
+            let wake_count = Arc::clone(&count);
+            let worker = Worker::spawn(
+                "once",
+                WakePath::interrupt("poll", move || {
+                    wake_count.fetch_add(1, Ordering::SeqCst);
+                }),
+                |shutdown| {
+                    while !shutdown.is_set() {
+                        std::thread::yield_now();
+                    }
+                },
+            )
+            .unwrap();
+            match mode {
+                0 => assert!(worker.stop()),
+                1 => assert!(worker.stop_within(JOIN_DEADLINE).is_clean()),
+                _ => drop(worker),
+            }
+            assert_eq!(count.load(Ordering::SeqCst), 1, "stop mode {mode}");
+        }
+    }
+
+    /// A worker that polls its stop flag exits after a stop request.
     #[test]
     fn polling_worker_stops_when_asked() {
         let ticks = Arc::new(AtomicU32::new(0));
@@ -367,7 +396,7 @@ mod tests {
     /// for any queue-driven driver thread. The wake is a sentinel send.
     ///
     /// Without the wake this worker never observes the flag at all: the
-    /// test would hang in `stop`, which is the defect the finding names.
+    /// call to `stop` would wait without a bound.
     #[test]
     fn wakes_a_worker_blocked_in_recv() {
         let (tx, rx) = channel::<u32>();

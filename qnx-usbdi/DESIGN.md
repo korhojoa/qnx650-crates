@@ -12,8 +12,11 @@ On a non-QNX host the crate compiles to stubs that return
 
 `init()` sets a process-local monotonic clock origin in `T0`.
 `now_ms()` returns the elapsed milliseconds. It initializes `T0` if necessary.
-`stamp()` supplies a `[ssss.mmm]` prefix. `log(args)` writes that prefix and
-the message to standard error.
+`stamp()` supplies a `[ssss.mmm]` prefix.
+On QNX, `log(args)` calls `qnx_slog::log::app_line`.
+That function writes once to file descriptor 2 without the Rust standard-error lock, then sends the message to slog.
+On other targets, `log(args)` uses the Rust standard-error lock.
+The optional process callback receives the stamped message after the default output.
 On QNX, `Instant` and condition-variable deadlines use `CLOCK_MONOTONIC` (value 2).
 The `usbd_io` timeout runs in the separate `io-usb` process.
 Transfer logs include the requested timeout and the locally measured elapsed time.
@@ -47,9 +50,9 @@ functions used: `usbd_connect`, `usbd_disconnect`, `usbd_attach`,
 `usbd_io`, `usbd_urb_status`, `usbd_device_descriptor`. NOT
 `usbd_string` (see contract item 12). Link: `build.rs` emits
 `cargo:rustc-link-search=native=/opt/qnx650/target/qnx6/armle-v7/lib`
-and `cargo:rustc-link-lib=dylib=usbdi` for `nto-qnx` targets only (the
-`qsaplay` pattern; `libusbdi.so` exists there and on the host at
-the target library directory). Constants from `usbdi.h` /
+and `cargo:rustc-link-lib=dylib=usbdi` for QNX targets only.
+This is a compiler-image path, not an installation path.
+Constants from `usbdi.h` /
 `usb100.h` (`USBD_VERSION 0x0101`, `USB_VERSION 0x0110`,
 `USBD_CONNECT_WILDCARD 0xffffffff`, `URB_DIR_IN 1`, `URB_DIR_OUT 2`,
 `URB_SHORT_XFER_OK 4`, `USBD_URB_STATUS_MASK 0xFF000000`,
@@ -116,7 +119,7 @@ completion behavior can differ.
 3. Transfer buffers come from `usbd_alloc` (DMA-safe), never from the
    Rust heap. Copy in, submit, copy out. A control transfer stages
    through `usbd_alloc(max(len, 1))` so an empty slice's dangling pointer
-   is never handed to io-usb (the dvbtuner shape). The largest OUT URB
+   is never handed to io-usb. The largest OUT URB
    with a logged size on dwcotg is the NIC's 4096-byte TX; a 64 KiB OUT
    is one 128-packet hardware transfer DMA'd straight from the
    `usbd_alloc` block, so its completion and the physical contiguity of
@@ -165,13 +168,12 @@ completion behavior can differ.
    checks and before any log line or lock, and is dropped last.
    `usbd_disconnect` ends the event thread with `pthread_cancel` +
    `pthread_join` [RE: SDP @0x7be4-0x7bfc] and the cancel can land
-   mid-callback; QNX cancellation is `pthread_exit` with no unwinding
-   (`pthread.h` lines 254-255), and the `write(2)` inside `clock::log`
-   is a cancellation point, so a callback cancelled there would leave
-   the process-wide stderr lock (or the ring's mutex, held across the
-   completion log line) locked for ever and the next log line, the
-   `usbd_disconnect rc` line of `HostSys::drop` on the disconnecting
-   thread, would block. With the state disabled the cancel stays
+   during a callback. QNX cancellation calls `pthread_exit` without unwinding
+   (`pthread.h` lines 254-255). Native log writes can be cancellation points.
+   On QNX, the logger does not hold the Rust standard-error lock.
+   Cancellation must still not skip queue, registry or ring guards, or `Arc` destructors.
+   The optional process log callback can also hold application locks.
+   With cancellation disabled, the request stays
    pending until the callback has returned and is acted on at the event
    thread's next cancellation point (its next message to io-usb); with
    the default deferred cancel type, re-enabling does not itself exit
@@ -202,40 +204,22 @@ completion behavior can differ.
    causes SIGBUS on the target device; x86 host tests cannot detect this.
    `Endpoint` is
    an owned `#[repr(C)]` value built field by field; its address is what
-   `usbd_open_pipe` receives. `GET_DESCRIPTOR(CONFIGURATION, index)`
-   addresses the device's LIST of configurations, not the active one, so
-   the claim reads every block (`index` in `0..bNumConfigurations`,
-   `Device::raw_config_at`) and `desc::find_display_interface` picks
-   the first interface with class triple `0xFF/0x00/0x00` and a bulk
-   OUT endpoint, remembering its `bConfigurationValue` (byte 5),
-   interface and alternate. That block becomes the device's working
-   block (`Device::set_config_block`) for every later walk (warn if the
-   endpoint is not 1; refuse the device, with a log line, if no
-   configuration has such an interface). `bNumInterfaces` is byte 4 of
-   the block.
-7. Configuration: if io-usb selected a configuration other than the
-   display one (`inst.config != display.config`), the port issues
-   `usbd_select_config(dev, display.config)` and then listens a bounded
-   `reconfigure_settle_ms` (500) for io-usb's reaction: a removal plus
-   insertion of the same `(path, devno)` means re-attach through the new
-   instance; no event means the attached handle stays valid. [MEASURED on
-   a target USB adapter: `select_config(1)` from configuration
-   2 returned ok, no event followed, the handle stayed valid, and the
-   next `usbd_connect` reported the instance with `cfg 1` and the
-   `FF/00/00` ident: the switch persists across clients.] If io-usb had
-   already selected the display configuration, `usbd_select_config` is
-   issued only when `bNumInterfaces == 1` or `inst.config == 0` (device
-   arrived unconfigured), with `cfg = if inst.config != 0 { inst.config }
-   else { 1 }` (`usbhidd.c`). On a composite device that is already
-   configured it is skipped: io-usb configured the device at enumeration
-   and a SET_CONFIGURATION would reset the endpoint toggles of every
-   other interface (a devb-umass "virtual CD", an io-hid dock button);
-   libdlo could call `usb_set_configuration(1)` only because it first
-   detached every kernel driver from every interface. `usbd_select_interface
-   (dev, display.iface, display.alternate)` is always issued. A failure
-   of either call is logged with `bNumInterfaces` and `inst.config`, not
-   fatal.
-8. Pipe hygiene at claim: `usbd_reset_pipe` on the bulk OUT pipe, with
+   `usbd_open_pipe` receives. `Device::raw_config_at` reads a configuration by index.
+   `GET_DESCRIPTOR(CONFIGURATION, index)` addresses the configuration list, not the active configuration.
+   `bNumInterfaces` is byte 4. The general parser does not select a device policy.
+   The optional DisplayLink helper `desc::find_display_interface` searches all supplied configuration blocks.
+   It selects the first `0xFF/0x00/0x00` interface with a bulk OUT endpoint.
+   `DisplayInterface` records its configuration value, interface and alternate setting.
+   The application can use `Device::set_config_block` to retain the selected block.
+7. Configuration and interface selection are application operations.
+   `Device::select_config` and `Device::select_interface` expose the native calls.
+   Changing a configuration can reset endpoint toggles on other interfaces of a composite device.
+   Applications must account for other drivers before changing it.
+   DisplayLink applications can compare the instance configuration with `DisplayInterface::config`.
+   If they change it, they must handle removal and insertion events before reusing an attached handle.
+   [MEASURED] One adapter accepted configuration 1 from configuration 2 without a removal event.
+   The existing handle remained valid. This observation does not establish behavior for all devices.
+8. Pipe reset: `usbd_reset_pipe` on the bulk OUT pipe, with
    the `CLEAR_FEATURE(ENDPOINT_HALT)` fallback, so a
    previous unclean exit cannot leave the device's data toggle out of
    step. This also restores this port's own toggle state, which is why
@@ -310,18 +294,17 @@ completion behavior can differ.
     process-global buffer that the next call from any thread overwrites,
     and a code unit `wctomb` cannot encode in the C locale fails the
     whole call (from a disassembly of `libusbdi.so.2`, `usbd_string` at
-    0x5184, performed during the review). `Device::string(index)` does
-    what libdlo's `usb_get_string_simple` does: string descriptor 0 via
+    0x5184). `Device::string(index)` reads string descriptor 0 through
     `usbd_descriptor(dev, 0, USB_DESC_STRING, STANDARD|DEVICE, 0, 0, buf,
     255)` (require `bLength >= 4`, type 3; langid = first LANGID entry),
     then `usbd_descriptor(..., index, langid, buf, 255)` (type 3,
     `bLength <= 255`), decode `buf[2..bLength]` as UTF-16LE with every
     code unit above 0x7F mapped to `?` so the serial is deterministic.
-13. Deadlines: `Host::wait_events(settle_ms)` sleeps a bounded time and
-    drains; nothing in the crate waits for a plug. The EDID read in `dlo`
-    stops at the first failed transfer, non-CMP status or non-zero I2C
-    status byte, has an overall budget (5000 ms) and logs measured
-    per-transfer milliseconds.
+13. Deadlines: `Host::wait_events(settle_ms)` waits for the supplied interval, then drains the queue.
+    It does not wait for a device insertion.
+    Applications supply transfer timeouts and must account for controller-specific bounds in item 1.
+    A sequence of requests also requires an application deadline.
+    A transfer failure, non-CMP status or invalid response can end that sequence before the deadline.
 
 ## Safe API (`src/lib.rs`)
 

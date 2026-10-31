@@ -1,9 +1,9 @@
 [package]
 name = "oldabi-entry"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "The edge of a QNX 6.5 ARM library entered from old-ABI vendor code: stack-realigning export trampolines and the no_std panic handlers"
+description = "Stack alignment for QNX 6.5 ARM callback entries and no_std panic handlers"
 
 # Zero dependencies and #![no_std]. The trampolines are ARM assembly and
 # expand only in an ARM build; the panic handler pieces build anywhere.

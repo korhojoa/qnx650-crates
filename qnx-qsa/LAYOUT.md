@@ -27,12 +27,6 @@ Measured with the target compiler. The const asserts in `src/lib.rs` repeat the 
 below; the asserts of `snd_mixer_group_t` and `snd_mixer_groups_t` (which
 hold pointers) apply to 32-bit builds only.
 
-An earlier check of the same three PCM structures: the object
-`vchiq/deva-vcaud/libqsashim.a` of the Raspberry-QNX repository (compiled
-C) clears 752, 728 and 184 bytes for them and uses the offsets 4, 24, 28,
-32, 36, 472, 476, 488, 492, 496 (parameters), 16, 456 (setup) and 8
-(status). The measurement below agrees.
-
 ## Structs
 
 | struct | header | size | offsets |

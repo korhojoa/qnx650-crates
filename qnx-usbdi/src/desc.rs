@@ -19,7 +19,7 @@
 //!
 //! The descriptor parser and its fixtures run on the host without a device.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use crate::ffi::{
     UsbdEndpointDescriptor, USB_ATTRIB_BULK, USB_ATTRIB_INTERRUPT, USB_ATTRIB_TYPE_MASK,
@@ -195,7 +195,7 @@ pub fn num_interfaces(block: &[u8]) -> Result<u8> {
 
 /// Walk the whole block: every interface descriptor with the endpoints
 /// that follow it. Class-specific and unknown descriptors are skipped by
-/// their own `bLength`. A `bLength < 2` ends the walk.
+/// their own `bLength`. Each descriptor must fit inside the block.
 ///
 /// # Errors
 /// [`Error::BadDescriptor`] as [`total_length`].
@@ -203,13 +203,19 @@ pub fn walk(block: &[u8]) -> Result<Vec<Interface>> {
     let total = total_length(block)?;
     let mut out: Vec<Interface> = Vec::new();
     let mut off = 0usize;
-    while off + 2 <= total {
+    while off < total {
+        if total - off < 2 {
+            return Err(Error::BadDescriptor);
+        }
         let blen = usize::from(block[off]);
         let btype = block[off + 1];
-        if blen < 2 {
-            break;
+        if blen < 2 || blen > total - off {
+            return Err(Error::BadDescriptor);
         }
-        if btype == USB_DESC_INTERFACE && off + 9 <= total {
+        if (btype == USB_DESC_INTERFACE && blen < 9) || (btype == USB_DESC_ENDPOINT && blen < 7) {
+            return Err(Error::BadDescriptor);
+        }
+        if btype == USB_DESC_INTERFACE {
             out.push(Interface {
                 number: block[off + 2],
                 alternate: block[off + 3],
@@ -219,7 +225,7 @@ pub fn walk(block: &[u8]) -> Result<Vec<Interface>> {
                 protocol: block[off + 7],
                 endpoints: Vec::new(),
             });
-        } else if btype == USB_DESC_ENDPOINT && off + 7 <= total {
+        } else if btype == USB_DESC_ENDPOINT {
             if let Some(cur) = out.last_mut() {
                 cur.endpoints.push(Endpoint::new(
                     block[off],
@@ -266,18 +272,16 @@ pub fn interface_class(block: &[u8], iface: u8, alt: u8) -> Result<(u8, u8, u8)>
     Ok(interface(block, iface, alt)?.class_triple())
 }
 
-/// Whether a class triple is the vendor-specific one a `DisplayLink`
-/// display interface carries. The caller (the `dlo` claim helper)
-/// applies this before claiming; the walk itself does not refuse other
-/// classes, so a probe can still list them.
+/// Whether a class triple matches the `DisplayLink` vendor interface.
+/// This optional adapter helper does not restrict the general descriptor parser.
 #[must_use]
 pub fn is_vendor_class(triple: (u8, u8, u8)) -> bool {
     triple == VENDOR_CLASS_TRIPLE
 }
 
 /// The first bulk OUT endpoint of one interface. Logs a warning when it
-/// is not endpoint 1 (every `DisplayLink` driver writes to endpoint 1;
-/// a different number is worth a line in the record, not a refusal).
+/// is not endpoint 1, the `DisplayLink` convention. Other endpoints remain valid.
+/// This diagnostic does not restrict the general endpoint parser.
 ///
 /// # Errors
 /// [`Error::NoEndpoint`] when the interface has no bulk OUT endpoint;
@@ -417,8 +421,8 @@ pub fn langid(desc0: &[u8]) -> Option<u16> {
     Some(u16::from_le_bytes([desc0[2], desc0[3]]))
 }
 
-/// Decode a string descriptor (`bLength`, type 3, UTF-16LE payload) as
-/// libdlo's `usb_get_string_simple` does: every code unit above `0x7F`
+/// Decode a string descriptor (`bLength`, type 3, UTF-16LE payload).
+/// Every code unit above `0x7F`
 /// becomes `?`, so a serial number is deterministic on every locale and
 /// never fails on a character the C locale cannot encode (which is what
 /// `usbd_string` does, and why it is not used).
@@ -450,6 +454,24 @@ pub fn decode_string(desc: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_descriptor_must_contain_its_own_fields() {
+        for (offset, length) in [(9, 8), (9, 250), (18, 6), (18, 250), (18, 1)] {
+            let mut block = TWO_EPS;
+            block[offset] = length;
+            assert_eq!(
+                walk(&block),
+                Err(Error::BadDescriptor),
+                "offset {offset}, length {length}"
+            );
+        }
+        let mut partial = TWO_EPS.to_vec();
+        partial.push(2);
+        let total = u16::try_from(partial.len()).unwrap().to_le_bytes();
+        partial[2..4].copy_from_slice(&total);
+        assert_eq!(walk(&partial), Err(Error::BadDescriptor));
+    }
 
     #[test]
     fn hid_report_length_comes_from_the_asked_interface_only() {
@@ -623,10 +645,10 @@ mod tests {
         let mut no_out = TWO_EPS;
         no_out[20] = 0x81;
         assert_eq!(find_bulk_out(&no_out, 0, 0), Err(Error::NoEndpoint));
-        // A zero bLength stops the walk instead of looping.
+        // A zero bLength is malformed.
         let mut stuck = TWO_EPS;
         stuck[18] = 0;
-        assert_eq!(endpoints(&stuck, 0, 0).unwrap().len(), 0);
+        assert_eq!(endpoints(&stuck, 0, 0), Err(Error::BadDescriptor));
     }
 
     #[test]

@@ -20,9 +20,8 @@ podman run --rm -v "$PWD:/w" -v "$SDP/target/qnx6/usr/include:/sdp:ro" -w /w \
 
 Each probe line is `const int NAME = (int)(EXPR);`, for example
 `const int v_PROT_NOCACHE = (int)(PROT_NOCACHE);`. Measured with the target compiler.
-The probe included `sys/mman.h` and `sys/neutrino.h`. qnx-rpi's
-`abi-check.c` held the same values against the ARM and x86 headers; they
-are the same on both targets.
+The measurement includes `sys/mman.h` and `sys/neutrino.h`.
+The ARM and x86 headers give the same values.
 
 ## Values
 

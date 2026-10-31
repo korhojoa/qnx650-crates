@@ -1,9 +1,9 @@
 # qnx-usbdi: the io-usb client API (libusbdi.so.2) in Rust, for QNX 6.5.0.
 #
-# Copyright 2026. Licensed under the Apache License, Version 2.0.
+# Copyright 2026 qnx650-crates contributors. Licensed under the Apache License, Version 2.0.
 [package]
 name = "qnx-usbdi"
-version = "0.2.0"
+version = "0.2.4"
 edition = "2021"
 description = "Safe Rust over QNX 6.5 libusbdi: connect, attach, control, bulk and interrupt transfers"
 license = "Apache-2.0"
@@ -11,3 +11,6 @@ build = "build.rs"
 
 [dependencies]
 qnx-stop = { path = "../qnx-stop" }
+
+[target.'cfg(target_os = "nto")'.dependencies]
+qnx-slog = { path = "../qnx-slog", features = ["static-slogf"] }

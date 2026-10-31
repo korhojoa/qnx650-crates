@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The slogger's own protocol, written directly to `/dev/slog`.
 //!
-//! The QNX 6.5 libc keeps slogf/vslogf/slogb in the static libc.a only, so a
-//! stand-alone program used to link slog.o out of the SDP. This module needs
-//! nothing from it. What libc's slogb/vslogf send (read from the SDP's
-//! slog.o) is one `_IO_WRITE` message on the `/dev/slog` file
-//! descriptor whose payload is:
+//! This writer sends an `_IO_WRITE` message to `/dev/slog`.
+//! It does not link the static slog implementation.
+//! The message payload contains these fields:
 //!
 //! ```text
 //! int32  severity   (bit 3, value 8, set for text: what vslogf adds)
@@ -20,7 +18,7 @@
 //! failed write it reopens once and retries, as libc does on EBADF.
 
 use core::ffi::{c_int, CStr};
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::sys;
 
@@ -30,30 +28,79 @@ const SLOG_TEXT: c_int = 8;
 const MAX_TEXT: usize = 1016;
 const HEADER: usize = 12;
 
-/// The `/dev/slog` descriptor, -1 while closed.
-static FD: AtomicI32 = AtomicI32::new(-1);
-
-fn open_fd() -> c_int {
-    let fd = FD.load(Ordering::Acquire);
-    if fd >= 0 {
-        return fd;
-    }
-    // SAFETY: NUL-terminated path, write-only.
-    let fd = unsafe { sys::open(c"/dev/slog".as_ptr(), sys::O_WRONLY) };
-    if fd >= 0 {
-        FD.store(fd, Ordering::Release);
-    }
-    fd
+struct Writer {
+    fd: AtomicI32,
+    busy: AtomicBool,
 }
 
-fn reopen() -> c_int {
-    let old = FD.swap(-1, Ordering::AcqRel);
-    if old >= 0 {
-        // SAFETY: a descriptor this module opened.
-        unsafe { sys::close(old) };
+struct Held<'a>(&'a AtomicBool);
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
-    open_fd()
 }
+
+trait FileOps {
+    fn open(&self) -> c_int;
+    fn write(&self, fd: c_int, bytes: &[u8]) -> bool;
+    fn close(&self, fd: c_int);
+}
+
+struct Native;
+impl FileOps for Native {
+    fn open(&self) -> c_int {
+        // SAFETY: NUL-terminated path, write-only.
+        unsafe { sys::open(c"/dev/slog".as_ptr(), sys::O_WRONLY) }
+    }
+    fn write(&self, fd: c_int, bytes: &[u8]) -> bool {
+        // SAFETY: the writer holds its descriptor gate and the buffer is valid.
+        // The slogger reply count need not equal the input length.
+        unsafe { sys::write(fd, bytes.as_ptr().cast(), bytes.len()) >= 0 }
+    }
+    fn close(&self, fd: c_int) {
+        // SAFETY: the writer opened this descriptor and excludes other writes.
+        unsafe { sys::close(fd) };
+    }
+}
+
+impl Writer {
+    const fn new() -> Self {
+        Self {
+            fd: AtomicI32::new(-1),
+            busy: AtomicBool::new(false),
+        }
+    }
+
+    fn send(&self, bytes: &[u8], ops: &impl FileOps) -> bool {
+        while self
+            .busy
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        let _held = Held(&self.busy);
+        let mut fd = self.fd.load(Ordering::Relaxed);
+        for _ in 0..2 {
+            if fd < 0 {
+                fd = ops.open();
+                self.fd.store(fd, Ordering::Relaxed);
+            }
+            if fd < 0 {
+                return false;
+            }
+            if ops.write(fd, bytes) {
+                return true;
+            }
+            ops.close(fd);
+            fd = -1;
+            self.fd.store(fd, Ordering::Relaxed);
+        }
+        false
+    }
+}
+
+static WRITER: Writer = Writer::new();
 
 /// Encode one text entry: the 12-byte header and the NUL-terminated text,
 /// cut at libc's limit. Returns the number of bytes to send.
@@ -72,40 +119,75 @@ pub fn encode(buf: &mut [u8; HEADER + MAX_TEXT], code: c_int, sev: c_int, line: 
     HEADER + n
 }
 
-fn send(bytes: &[u8]) -> bool {
-    let mut fd = open_fd();
-    if fd < 0 {
-        return false;
-    }
-    for _ in 0..2 {
-        // SAFETY: an open descriptor and a valid buffer of this length.
-        let r = unsafe { sys::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-        // The slogger's reply count is not the buffer length; only -1 is a
-        // failure, as in libc's slogsend. Measured on the Pi: checking for
-        // the full length retried and logged every entry twice.
-        if r >= 0 {
-            return true;
-        }
-        fd = reopen();
-        if fd < 0 {
-            return false;
-        }
-    }
-    false
-}
-
 /// Send one text entry with the given slog code and severity. Returns false
-/// when `/dev/slog` cannot be opened or written.
+/// when `/dev/slog` cannot be opened or written. Calls are serialized through
+/// the write and any close/reopen. Do not call from a signal handler.
 #[must_use]
 pub fn write_text(code: c_int, sev: c_int, line: &CStr) -> bool {
     let mut buf = [0u8; HEADER + MAX_TEXT];
     let n = encode(&mut buf, code, sev, line);
-    send(&buf[..n])
+    WRITER.send(&buf[..n], &Native)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_writers_hold_the_descriptor_through_retry() {
+        use std::sync::{Arc, Mutex};
+        #[derive(Default)]
+        struct State {
+            next: i32,
+            live: Option<i32>,
+            writes: usize,
+            closes: usize,
+        }
+        #[derive(Default)]
+        struct Mock(Mutex<State>);
+        impl FileOps for Mock {
+            fn open(&self) -> i32 {
+                let mut state = self.0.lock().unwrap();
+                assert!(state.live.is_none(), "no overwritten descriptor");
+                state.next += 1;
+                state.live = Some(state.next);
+                state.next
+            }
+            fn write(&self, fd: i32, _: &[u8]) -> bool {
+                std::thread::yield_now();
+                let mut state = self.0.lock().unwrap();
+                assert_eq!(state.live, Some(fd), "no closed or reused descriptor");
+                state.writes += 1;
+                // Each message fails once and then succeeds after reopen.
+                state.writes & 1 == 0
+            }
+            fn close(&self, fd: i32) {
+                let mut state = self.0.lock().unwrap();
+                assert_eq!(state.live.take(), Some(fd));
+                state.closes += 1;
+            }
+        }
+        let writer = Arc::new(Writer::new());
+        let ops = Arc::new(Mock::default());
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let writer = Arc::clone(&writer);
+                let ops = Arc::clone(&ops);
+                std::thread::spawn(move || {
+                    for _ in 0..100 {
+                        assert!(writer.send(b"entry", ops.as_ref()));
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let state = ops.0.lock().unwrap();
+        assert_eq!(state.writes, 1600);
+        assert_eq!(state.closes, 800);
+        assert_eq!(state.next, 801);
+    }
 
     #[test]
     fn header_then_text_with_nul() {

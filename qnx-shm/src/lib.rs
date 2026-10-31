@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! POSIX shared memory on QNX 6.5: create or open a named object and map
-//! it. This is how the daemons on the unit publish their rings and state
-//! blocks (`/hidkbm-*`, `/btgamepad`, `/usbgamepad`, `/bnep-iface` ...).
+//! it. Applications can share event rings and state blocks through these objects.
 //!
 //! The constants are QNX's, from the SDP headers (`fcntl.h`, `sys/mman.h`,
 //! `sys/stat.h`; the headers write them in octal). They differ from
@@ -216,8 +215,7 @@ mod tests {
 
     #[test]
     fn qnx_values_match_the_sdp_headers() {
-        // Written as the headers write them (octal), checked against the
-        // hex values the earlier hand copies used.
+        // Compare the header values in octal and hexadecimal form.
         assert_eq!((O_RDWR, 0o400, S_IRUSR, S_IWUSR), (0x2, 0x100, 0x100, 0x80));
         assert_eq!((S_IRGRP, S_IWGRP, S_IROTH, S_IWOTH), (0x20, 0x10, 0x4, 0x2));
         assert_eq!(MODE_ALL_RW, 0o666);

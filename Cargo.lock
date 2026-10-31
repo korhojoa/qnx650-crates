@@ -4,21 +4,21 @@ version = 4
 
 [[package]]
 name = "hidkbm-ring"
-version = "0.2.0"
+version = "0.2.3"
 dependencies = [
  "qnx-shm",
 ]
 
 [[package]]
 name = "joined-worker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "qnx-syslog",
 ]
 
 [[package]]
 name = "oldabi-entry"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "qnx-dl"
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "qnx-slog"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "qnx-dl",
  "qnx-time",
@@ -86,7 +86,7 @@ version = "0.1.0"
 
 [[package]]
 name = "qnx-syspage"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "qnx-time"
@@ -94,7 +94,8 @@ version = "0.1.0"
 
 [[package]]
 name = "qnx-usbdi"
-version = "0.2.0"
+version = "0.2.4"
 dependencies = [
+ "qnx-slog",
  "qnx-stop",
 ]

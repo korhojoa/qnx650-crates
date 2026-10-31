@@ -9,8 +9,8 @@
 //!
 //! Connect parameters (contract item 5): `vusb = USB_VERSION` (0x0110,
 //! the USB spec version, NOT `USBD_VERSION`), `vusbd = USBD_VERSION`,
-//! `connect_wait = 2` seconds (the five C clients pass 60; a wrong path
-//! should fail fast and the path is in the error), `funcs.nentries = 3`,
+//! `connect_wait = 2` seconds. A connection error includes the path.
+//! `funcs.nentries = 3`,
 //! `event = None`.
 //!
 //! Teardown order: a `Device` holds a reference to the connection, so
@@ -20,7 +20,7 @@
 //! loop tick), `next_events` blocks until the event thread queues one (a
 //! caller that waits for a plug).
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use core::fmt;
 use core::marker::PhantomData;
@@ -135,15 +135,23 @@ pub(crate) fn release_host_slot() {
 /// `Rc`, not an `Arc`: nothing on libusbdi's event thread touches it
 /// (the callbacks reach only the global queue), and `Host` and `Device`
 /// are single-threaded.
-pub(crate) struct HostShared {
+pub(crate) struct HostShared<T = sys::HostSys> {
     pub(crate) path: String,
-    pub(crate) sys: sys::HostSys,
+    pub(crate) sys: T,
+    // Fields drop in declaration order. Release only after native shutdown.
+    _slot: HostSlot,
 }
 
-impl Drop for HostShared {
+struct HostSlot;
+impl Drop for HostSlot {
+    fn drop(&mut self) {
+        release_host_slot();
+    }
+}
+
+impl<T> Drop for HostShared<T> {
     fn drop(&mut self) {
         crate::log!("usbdi: disconnecting from {}", self.path);
-        release_host_slot();
     }
 }
 
@@ -178,6 +186,7 @@ impl Host {
                     shared: Rc::new(HostShared {
                         path: path.to_owned(),
                         sys,
+                        _slot: HostSlot,
                     }),
                     _not_send: PhantomData,
                 })
@@ -308,13 +317,36 @@ impl Drop for Host {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::{Mutex, PoisonError};
 
     /// The slot is process-global; the tests that take it run one at a
     /// time.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn native_shutdown_finishes_before_the_slot_is_released() {
+        struct NativeConnection;
+        impl Drop for NativeConnection {
+            fn drop(&mut self) {
+                assert!(
+                    !claim_host_slot(),
+                    "native callbacks still belong to this connection"
+                );
+            }
+        }
+        let _guard = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(claim_host_slot());
+        let shared = HostShared {
+            path: String::from("mock"),
+            sys: NativeConnection,
+            _slot: HostSlot,
+        };
+        drop(shared);
+        assert!(claim_host_slot());
+        release_host_slot();
+    }
 
     #[test]
     fn ident_default_is_all_wildcards_and_displays_them() {

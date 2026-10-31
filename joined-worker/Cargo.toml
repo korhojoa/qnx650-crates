@@ -1,6 +1,6 @@
 [package]
 name = "joined-worker"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Worker threads that are always joined and always have a wake path for whatever they block in; late joins are detected and logged, never abandoned; panic containment at a C boundary"

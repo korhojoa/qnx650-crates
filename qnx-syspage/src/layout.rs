@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 qnx650-crates contributors.
 //! Offsets and sizes of `sys/syspage.h` (SDP 6.5.0), measured with the
 //! SDP compiler for ARM (`LAYOUT.md`). All fields are fixed-width
 //! (`_Uint16t`, `_Uint32t`, `_Uint64t`); the one pointer, `asinfo_entry`'s
@@ -74,10 +75,9 @@ impl AsinfoEntry {
 }
 
 /// `offsetof(struct syspage_entry, cpuinfo) + offsetof(syspage_entry_info,
-/// entry_off)`: where the offset of the cpuinfo array is (the name
-/// qnx-rpi used).
+/// entry_off)`: the location of the cpuinfo array offset.
 pub const SYSPAGE_CPUINFO_ENTRY_OFF: usize = SYSPAGE_CPUINFO + INFO_ENTRY_OFF;
-/// `offsetof(struct cpuinfo_entry, cpu)` (the name qnx-rpi used).
+/// `offsetof(struct cpuinfo_entry, cpu)`.
 pub const CPUINFO_CPU: usize = CpuinfoEntry::CPU;
 
 const _: () = assert!(CpuinfoEntry::DATA_CACHE + 1 == CPUINFO_ENTRY_SIZE);

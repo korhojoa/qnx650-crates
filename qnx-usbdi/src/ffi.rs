@@ -27,7 +27,7 @@
 //! build has no `libusbdi` to link, and the safe layer above compiles to
 //! `Error::Unsupported` there (`sys/host.rs`).
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use core::ffi::{c_char, c_int, c_void};
 use core::marker::{PhantomData, PhantomPinned};
@@ -435,6 +435,8 @@ extern "C" {
     pub fn usbd_reset_pipe(pipe: *mut UsbdPipe) -> c_int;
     /// `usbdi.h` line 311.
     pub fn usbd_abort_pipe(pipe: *mut UsbdPipe) -> c_int;
+    /// Reset an attached device (`usbdi.h`).
+    pub fn usbd_reset_device(device: *mut UsbdDevice) -> c_int;
     /// `usbdi.h` line 314.
     pub fn usbd_alloc_urb(link: *mut UsbdUrb) -> *mut UsbdUrb;
     /// `usbdi.h` line 318. Returns the link, which the port never uses.
@@ -456,7 +458,7 @@ extern "C" {
         len: usize,
     ) -> c_int;
     /// `usbdi.h` line 336. A generic setup packet: standard requests go
-    /// through it too (`CLEAR_FEATURE` in the GIP shim).
+    /// through it too, including `CLEAR_FEATURE`.
     pub fn usbd_setup_vendor(
         urb: *mut UsbdUrb,
         flags: u32,

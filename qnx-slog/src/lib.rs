@@ -1,21 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! System-log output for QNX 6.5 applications.
 //!
-//! - [`sink`]: where a line goes. slogf, else vslogf, found at run time in
-//!   the process (libraries injected into `dio_manager` / gal), else the
-//!   direct writer. The `static-slogf` feature selects the direct writer
-//!   only (stand-alone programs; the unit's libc.so.3 exports neither
-//!   slogf nor vslogf).
-//! - [`direct`]: the slogger's protocol on `/dev/slog`, written with open
-//!   and write, so nothing is linked out of the SDP's static libc.
-//! - [`log`]: allocation-free lines in fixed buffers: the date-stamped
-//!   `ldr_log!`/`ldr_loge!` form and `slog_raw!` (gal's loader), and
-//!   `ms_log!`, the `mono_ms=.. wall_ms=.. tag: text` form stand-alone
-//!   programs use, which also goes to stdout.
-//! - [`sys`]: the QNX 6.5 libc declarations these need, plus dlsym helpers.
-//!
-//! Shared logging support for QNX applications;
-//! relicensed MIT OR Apache-2.0 to match this repository.
+//! - [`sink`] selects a runtime slog function or the direct writer.
+//!   The `static-slogf` feature selects only the direct writer.
+//! - [`direct`] sends the slog protocol to `/dev/slog` with `open` and `write`.
+//! - [`log`] formats messages in fixed stack buffers without allocation.
+//!   Loader macros supply wall-clock timestamps. `slog_raw!` supplies only text.
+//!   `ms_log!` sends monotonic and wall-clock timestamps to stdout and slog.
+//!   `app_line` writes once to file descriptor 2, then sends the line to slog.
+//! - [`sys`] declares the native interfaces and re-exports linker and clock functions.
 
 #![cfg_attr(not(test), no_std)]
 

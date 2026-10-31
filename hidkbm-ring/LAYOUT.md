@@ -1,9 +1,8 @@
 # hidkbm-ring: layouts and values
 
-Every size, offset and value that `src/lib.rs` and `src/sys.rs` pin, with
-the header it comes from. SDP header paths are relative to
-`target/qnx6/usr/include` of the SDP; `hidinput_shm.h` is the C producer's
-header (`apps/usbhidd/hidinput_shm.h` in the tree that holds usbhidd).
+The tables define the shared-memory ABI for ring producers and readers.
+`src/lib.rs` declares the ring structures. `src/sys.rs` declares the system calls.
+SDP header paths are relative to `target/qnx6/usr/include`.
 
 ## How the numbers were measured
 
@@ -28,16 +27,16 @@ repeat the struct numbers, so a build fails if a struct drifts.
 
 | struct | header | size | offsets |
 |---|---|---|---|
-| `hidinput_shm_t` (`Shm`) | `hidinput_shm.h` | 2064 | head 4, kbd_present 8, ev 16 |
-| `hidinput_ev_t` (`Event`) | `hidinput_shm.h` | 8 | dx 4 |
+| `Shm` | `src/lib.rs` | 2064 | head 4, kbd_present 8, ev 16 |
+| `Event` | `src/lib.rs` | 8 | dx 4 |
 | `struct pollfd` (`PollFd`) | `poll.h` 70-74 | 8 | events 4, revents 6 |
 
 ## Values
 
 | name | header | QNX 6.5 | host (Linux) |
 |---|---|---|---|
-| `HIDINPUT_MAGIC` (`MAGIC`) | `hidinput_shm.h` | 0x4b424d31 | same |
-| `HIDINPUT_RING` (`RING`) | `hidinput_shm.h` | 256 | same |
+| `MAGIC` | `src/lib.rs` | 0x4b424d31 | same |
+| `RING` | `src/lib.rs` | 256 | same |
 | `O_RDONLY` (from qnx-shm) | `fcntl.h` 76 | 0 | 0 |
 | `O_RDWR` (from qnx-shm) | `fcntl.h` | 2 | 2 |
 | `O_CREAT` (from qnx-shm) | `fcntl.h` 107 | 0o400 (256) | 0o100 |
@@ -46,8 +45,4 @@ repeat the struct numbers, so a build fails if a struct drifts.
 | `EINTR` | `errno.h` 57 | 4 | 4 |
 | `nfds_t` (`NfdsT`) | `poll.h` 68 | `unsigned int`, 4 bytes | `unsigned long` |
 
-The QNX values are the same as those of the QNX 6.5 `libc` fork the
-consumers patched in before 0.2.0 (`src/unix/nto/mod.rs`: `O_NONBLOCK`
-0o200, `POLLIN` `POLLRDNORM | POLLRDBAND`, `EINTR` 4, `nfds_t` `c_uint`),
-so the calls the crate makes did not change. The shared-memory calls,
-their constants and the 32-bit `off_t` are `qnx-shm`'s.
+The `qnx-shm` crate supplies shared-memory calls, their constants and the 32-bit `off_t` type.

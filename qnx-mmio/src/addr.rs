@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 qnx650-crates contributors.
 //! Checked physical address and length types.
 //!
-//! Distinct types rather than interchangeable integers, because defects of
-//! exactly that kind were found in the C drivers these replace:
-//! `disp_freemem(surf->paddr, surf->stride)` passed a physical address
-//! where a pointer belonged and a stride where a length belonged, and a
-//! page-rounded length wrapped and produced a mapping window shorter than
-//! the transfer it was for. Here an address and a length cannot be
-//! swapped at a call site, and rounding refuses rather than wraps.
+//! Distinct address and length types prevent argument swaps.
+//! Page rounding rejects integer overflow.
 //!
 //! Bus addresses (a physical address seen through a GPU's or a DMA
 //! engine's alias) are board-specific and live in the board crate.
@@ -56,10 +52,7 @@ const PAGE_MASK: u32 = PAGE_SIZE - 1;
 /// The offset of `addr` within its page, and the page-rounded window
 /// length needed to cover `len` bytes from it.
 ///
-/// Returns `None` rather than wrapping. The C original was
-/// `(len + off + 0xfff) & ~0xfff`, which for a large `len` produces a
-/// window shorter than the transfer: mapping less than you then read or
-/// write.
+/// Returns `None` if the length is zero or the rounded extent overflows.
 #[must_use]
 pub fn map_extent(addr: PhysAddr, len: Len) -> Option<(u32, u32)> {
     if len.0 == 0 {
@@ -95,7 +88,7 @@ mod tests {
     #[test]
     fn map_extent_refuses_rather_than_wrapping() {
         assert_eq!(map_extent(PhysAddr::new(0x1000), Len(0)), None);
-        // The case the C version got wrong.
+        // Refuse a page extent that would overflow.
         assert_eq!(
             map_extent(PhysAddr::new(0x1800), Len(u32::MAX - 0x400)),
             None

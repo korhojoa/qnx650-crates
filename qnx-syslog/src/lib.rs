@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 qnx650-crates contributors.
 //! Log lines of a stand-alone QNX 6.5 executable: each line goes to the
 //! system log through `syslog()` and to stderr with a `[ssss.mmm]` stamp.
 //!
@@ -22,8 +23,6 @@
 //!
 //! [`trace`] is gated at run time ([`set_trace`]): per-operation tracing
 //! is disabled by default to keep normal logs readable.
-//!
-//! Uses the shared system-log interface.
 
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,7 +32,7 @@ use std::time::Instant;
 // The syslog.h values of SDP 6.5.0, measured with the compiler
 // image's arm-unknown-nto-qnx6.5.0eabi-gcc -S against the SDP headers
 // (the probe method of qnx-mmio/LAYOUT.md): LOG_ERR 3, LOG_WARNING 4,
-// LOG_INFO 6, LOG_USER 8. The same on x86 (qnx-rpi abi-check.c).
+// LOG_INFO 6, LOG_USER 8. The x86 headers give the same values.
 
 /// `LOG_ERR` (`syslog.h`).
 pub const LOG_ERR: c_int = 3;

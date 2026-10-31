@@ -6,7 +6,7 @@
 //! `urb_status`, a free function the completion callback calls, which
 //! is unreachable because no `SlotSys` exists to submit a URB.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use core::ffi::c_void;
 
@@ -33,6 +33,10 @@ impl HostSys {
 pub(crate) enum DeviceSys {}
 
 impl DeviceSys {
+    pub(crate) fn reset(&self) -> Result<()> {
+        match *self {}
+    }
+
     pub(crate) fn device_descriptor(&self) -> UsbdDeviceDescriptor {
         match *self {}
     }

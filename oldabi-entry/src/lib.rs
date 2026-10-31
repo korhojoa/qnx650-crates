@@ -6,15 +6,18 @@
 //!
 //! # Why the trampolines
 //!
-//! Vendor code on the MIB2 and the feature libraries built by the stock
-//! gcc 4.4.2 use the old ARM ABI (APCS-GNU, ELF `e_flags` 0x602). It keeps
-//! SP only 4-byte aligned. Rust code is AAPCS and assumes SP is 8-byte
-//! aligned at every call, and LLVM uses that: it forms the address of a
-//! field of an 8-aligned stack object with ORR instead of ADD (for example
-//! `orr r1, r6, #4` for `&tm.tm_min`). Entered with SP = 4 (mod 8), that
-//! ORR does nothing and the field aliases its neighbour, so the body reads
-//! or writes the wrong stack slot. For an AAPCS caller the realignment
-//! does nothing.
+//! Some native call sites supply only four-byte stack alignment. Rust
+//! assumes eight-byte alignment at an AAPCS call boundary. The trampoline
+//! protects calls from those sites, including APCS-GNU callers.
+//! A vendor executable can use EABI5. Its ELF flags do not establish the
+//! stack alignment at each callback. The caller contract must be verified
+//! at each integration boundary.
+//!
+//! With four-byte alignment, LLVM can address the wrong stack field when
+//! it uses ORR for an offset in an eight-byte-aligned object. For example,
+//! `orr r1, r6, #4` does not add four when that bit is set in `r6`.
+//! The trampoline aligns the stack before the Rust body starts.
+//! For an eight-byte-aligned caller, the realignment makes no change.
 //!
 //! # The trampoline
 //!
@@ -43,7 +46,7 @@
 //!
 //! The short form, for a body with no stack-passed arguments, replaces
 //! `sub` and `bic` with one `bic r12, sp, #7`. Both forms are correct for
-//! zero stack words. Each user keeps the form its build audit checks for.
+//! zero stack words. The caller selects the form through the macro arguments.
 //!
 //! # Stack words
 //!
@@ -75,7 +78,7 @@
 
 use core::ffi::c_void;
 use core::fmt;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 /// Defines a stack-realigning ARM trampoline for an `extern "C"` body.
 ///
@@ -307,10 +310,13 @@ pub type FaultFn = extern "C" fn(user: *mut c_void, msg: *const u8, len: u32);
 /// The registered fault callback and its user pointer, for
 /// [`fault_panic_handler!`]. Put one in a `static` of the artifact crate.
 ///
-/// [`FaultSink::set`] stores the user pointer first, then publishes the
-/// callback with Release. The panic path's Acquire load of the callback
-/// therefore sees the matching user pointer, with no lock and no data race.
+/// Registration and delivery use one gate to copy the callback and context.
+/// Delivery does not wait when the gate is busy: this permits a
+/// panic on the registering thread without a deadlock. The callback runs
+/// after the gate is released. Its user pointer must remain valid until all
+/// reports that could have selected that registration have returned.
 pub struct FaultSink {
+    changing: AtomicBool,
     user: AtomicPtr<c_void>,
     func: AtomicPtr<c_void>,
 }
@@ -320,6 +326,7 @@ impl FaultSink {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            changing: AtomicBool::new(false),
             user: AtomicPtr::new(core::ptr::null_mut()),
             func: AtomicPtr::new(core::ptr::null_mut()),
         }
@@ -329,9 +336,17 @@ impl FaultSink {
     /// `None`. The last call wins.
     #[inline]
     pub fn set(&self, f: Option<FaultFn>, user: *mut c_void) {
+        while self
+            .changing
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
         self.user.store(user, Ordering::Relaxed);
         let fp = f.map_or(core::ptr::null_mut(), |func| func as *mut c_void);
-        self.func.store(fp, Ordering::Release);
+        self.func.store(fp, Ordering::Relaxed);
+        self.changing.store(false, Ordering::Release);
     }
 
     /// Formats `info` into a [`PanicText`] and calls the callback, if one is
@@ -355,13 +370,21 @@ impl FaultSink {
     /// Calls the callback, if one is registered, with `text`.
     #[inline]
     fn deliver(&self, text: &PanicText) {
-        let fp = self.func.load(Ordering::Acquire);
+        if self
+            .changing
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        let fp = self.func.load(Ordering::Relaxed);
+        let user = self.user.load(Ordering::Relaxed);
+        self.changing.store(false, Ordering::Release);
         if !fp.is_null() {
             // SAFETY: the only non-null values stored in `func` come from a
             // FaultFn converted to a data pointer in `set`; this target uses
             // same-width code and data pointers.
             let f: FaultFn = unsafe { core::mem::transmute::<*mut c_void, FaultFn>(fp) };
-            let user = self.user.load(Ordering::Relaxed);
             f(user, text.b.as_ptr(), text.len_u32());
         }
     }
@@ -495,8 +518,51 @@ mod tests {
     use std::vec::Vec;
 
     #[test]
+    fn reporting_does_not_wait_for_a_registration() {
+        let sink = FaultSink::new();
+        sink.changing.store(true, Ordering::Relaxed);
+        sink.report_args(format_args!("nested fault"));
+        sink.changing.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn concurrent_registration_keeps_callback_and_context_together() {
+        use core::sync::atomic::AtomicUsize;
+        use std::sync::{Arc, Barrier};
+        static WRONG: AtomicUsize = AtomicUsize::new(0);
+        extern "C" fn first(user: *mut c_void, _: *const u8, _: u32) {
+            if user as usize != 1 {
+                WRONG.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        extern "C" fn second(user: *mut c_void, _: *const u8, _: u32) {
+            if user as usize != 2 {
+                WRONG.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let sink = Arc::new(FaultSink::new());
+        let barrier = Arc::new(Barrier::new(2));
+        let writer_sink = Arc::clone(&sink);
+        let writer_barrier = Arc::clone(&barrier);
+        let writer = std::thread::spawn(move || {
+            writer_barrier.wait();
+            for _ in 0..200_000 {
+                writer_sink.set(Some(first), core::ptr::without_provenance_mut(1));
+                writer_sink.set(Some(second), core::ptr::without_provenance_mut(2));
+                writer_sink.set(None, core::ptr::null_mut());
+            }
+        });
+        barrier.wait();
+        for _ in 0..200_000 {
+            sink.report_args(format_args!("fault"));
+        }
+        writer.join().unwrap();
+        assert_eq!(WRONG.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn frame_bytes_keep_sp_aligned() {
-        // The sizes the hand-written trampolines used.
+        // Stack frames round up to an eight-byte boundary.
         assert_eq!(frame_bytes(0), 0);
         assert_eq!(frame_bytes(1), 8);
         assert_eq!(frame_bytes(2), 8);

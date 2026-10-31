@@ -19,7 +19,8 @@
 //! freed memory and nothing is ever freed on libusbdi's event thread.
 //! The callback runs with thread cancellation disabled (`cancel` module
 //! doc): `usbd_disconnect`'s `pthread_cancel` of the event thread must
-//! not end it inside the `Book` mutex or the stderr lock.
+//! not skip the `Book` mutex guard or the callback's `Arc` destructor.
+//! Native log writes can be cancellation points without a Rust stderr lock.
 //!
 //! The drain condition (in-flight == 0) is set INSIDE the callback and
 //! so precedes libusbdi's own accounting by the callback's return: the
@@ -65,7 +66,7 @@
 //! choice, first-failure capture, the `CMP`-and-length judgement, the
 //! statistics. The URBs themselves exist only on the target.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use core::ffi::c_void;
 use core::mem::ManuallyDrop;
@@ -84,15 +85,13 @@ use crate::ffi::{
 use crate::sys;
 use crate::{stop, Error, Result};
 
-/// Ring depth when the caller has no opinion (`dlotest --slots`).
+/// Default ring depth when the caller does not select a value.
 pub const DEFAULT_SLOTS: usize = 4;
 
-/// Slot size when the caller has no opinion: one libdlo command buffer
-/// (`dlotest --urb-bytes`).
+/// Default slot capacity in bytes. Controller support is application-specific.
 pub const DEFAULT_SLOT_BYTES: usize = 65_536;
 
-/// Timeout of the `CLEAR_FEATURE(ENDPOINT_HALT)` fallback (the GIP
-/// shim's 1000 ms).
+/// Timeout of the `CLEAR_FEATURE(ENDPOINT_HALT)` fallback in milliseconds.
 pub const CLEAR_HALT_TIMEOUT_MS: u32 = 1000;
 
 /// Drain bound at teardown before any `write` has set one, and the
@@ -363,17 +362,8 @@ impl Drop for RingState {
 /// submission (what `BulkOut::write` passes); it is reclaimed exactly
 /// once here. `urb` is the URB io-usb completed.
 unsafe extern "C" fn bulk_complete(urb: *mut UsbdUrb, _pipe: *mut UsbdPipe, handle: *mut c_void) {
-    // First, before the null check, any log line and the Book lock:
-    // usbd_disconnect pthread_cancels the event thread and the cancel can
-    // land mid-callback, including a completion after a leaked ring.
-    // QNX cancellation is
-    // pthread_exit with no unwinding (pthread.h lines 254-255) and the
-    // write(2) inside clock::log is a cancellation point, so a cancel
-    // acted on there would leave the stderr lock, and the Book mutex held
-    // across the log line, locked for ever. Disabled until this guard
-    // drops, which is after the explicit drop(book) and drop(ring) at the
-    // end, the pending cancel is acted on at the thread's next MsgSendv_r
-    // to io-usb instead. Covers the vlog! in sys::urb_status too.
+    // Disable cancellation before logging and the Book lock. Native writes
+    // can cancel without unwinding. Restore only after book and ring drop.
     let _cancel = CancelGuard::new();
     if handle.is_null() {
         crate::log!("usbdi: bulk completion with a null handle; ignored");
@@ -640,7 +630,7 @@ impl BulkOut {
     }
 
     /// `usbd_reset_pipe`, then the `CLEAR_FEATURE(ENDPOINT_HALT)`
-    /// fallback the GIP shim uses when it fails. Restores both sides'
+    /// fallback if the pipe reset fails. Restores the two sides'
     /// data toggle after an unclean previous exit. Meant for an idle
     /// pipe: URBs in flight complete `ABORTED` and are reported by the
     /// next `flush`.

@@ -8,9 +8,8 @@
 //! `Host::poll` drains it.
 //!
 //! The insertion callback runs on libusbdi's event thread, the same
-//! thread that delivers URB completions (`dwcotg/STATUS.md`, "THE usbdi
-//! LESSON": blocking there waits for a completion that only this thread
-//! can deliver). The removal callback runs there only when no transfer
+//! thread that delivers URB completions. A blocking callback can prevent
+//! that thread from delivering the completion it waits for. The removal callback runs there only when no transfer
 //! is outstanding on the attached device when the event is processed;
 //! otherwise libusbdi defers it and invokes it from whichever thread
 //! brings the device's in-flight count to zero: the event thread's URB
@@ -36,11 +35,11 @@
 //! Both callbacks run their whole body with thread cancellation
 //! disabled (`cancel::CancelGuard`, their first local): `usbd_disconnect`
 //! ends the event thread with `pthread_cancel`, which on QNX is a
-//! `pthread_exit` with no unwinding, and a cancel landing inside the
-//! `write(2)` of a log line would leave the stderr lock held for ever
-//! (`cancel` module doc).
+//! `pthread_exit` without unwinding. Cancellation must not skip lock guards
+//! or `Arc` destructors. Native log writes can be cancellation points
+//! without a Rust standard-error lock. See the `cancel` module.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use core::fmt;
 use core::ptr;
@@ -52,10 +51,8 @@ use std::time::Duration;
 use crate::cancel::CancelGuard;
 use crate::ffi::{UsbdConnection, UsbdDeviceInstance};
 
-/// The most insertions/removals held between two `poll`s. The GIP shim
-/// sizes its queue at four per pad slot because a burst of interface
-/// matches arrives at daemon start; 64 covers any hub of devices this
-/// crate will see, and a drop is logged, never silent.
+/// Maximum queued insertion and removal events between polls.
+/// A full queue produces a drop log instead of an unbounded allocation.
 pub const QUEUE_CAPACITY: usize = 64;
 
 /// A newtype over the raw 36-byte `usbd_device_instance_t`. `Copy`; it is
@@ -333,15 +330,9 @@ pub unsafe extern "C" fn insertion_callback(
     _conn: *mut UsbdConnection,
     inst: *mut UsbdDeviceInstance,
 ) {
-    // First, before any log line or lock: usbd_disconnect pthread_cancels
-    // the event thread and the cancel can land mid-callback
-    // during usbd_disconnect; QNX cancellation is
-    // pthread_exit with no unwinding (pthread.h lines 254-255) and the
-    // write(2) inside clock::log is a cancellation point, so a cancel
-    // acted on there would leave the stderr lock held for ever. With the
-    // state disabled until this guard drops (last, it is the first
-    // local), the pending cancel is acted on at the event thread's next
-    // MsgSendv_r to io-usb instead. Covers the log! in push() too.
+    // Disable cancellation before logging or locking. Native log writes
+    // can cancel the thread without running lock or Arc destructors.
+    // The first local drops last, after all callback state is released.
     let _cancel = CancelGuard::new();
     if inst.is_null() {
         crate::log!("usbdi: insertion callback with a null instance; ignored");
@@ -376,11 +367,7 @@ pub unsafe extern "C" fn removal_callback(
     _conn: *mut UsbdConnection,
     inst: *mut UsbdDeviceInstance,
 ) {
-    // First, before any log line or lock: as in insertion_callback, the
-    // cancel usbd_disconnect sends the event thread must not be acted on
-    // inside the write(2) of the level-0 log line below or inside the
-    // GONE / EVENTS locks; deferred until this guard drops (last), it is
-    // taken at the thread's next MsgSendv_r to io-usb.
+    // Restore cancellation only after queue and registry guards are released.
     let _cancel = CancelGuard::new();
     if inst.is_null() {
         crate::log!("usbdi: removal callback with a null instance; ignored");

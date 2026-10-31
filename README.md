@@ -11,7 +11,7 @@ See [Terms](docs/TERMS.md) for the technical names and
 | --- | --- |
 | `hidkbm-ring` | Read keyboard and mouse ring events. |
 | `joined-worker` | Stop and join an owned worker. |
-| `oldabi-entry` | Align calls from the older ARM ABI. |
+| `oldabi-entry` | Align the stack at ARM callback entries. |
 | `qnx-dl` | Load libraries and find symbols. |
 | `qnx-errno` | Read and set the thread error number. |
 | `qnx-mmio` | Map device memory. |
@@ -25,7 +25,7 @@ See [Terms](docs/TERMS.md) for the technical names and
 | `qnx-syslog` | Write system log messages. |
 | `qnx-syspage` | Read system page data. |
 | `qnx-time` | Read monotonic and wall clocks. |
-| `qnx-usbdi` | Use USB device interfaces. |
+| `qnx-usbdi` | Use USB device interfaces, with optional DisplayLink adapter helpers. |
 
 ## Fetch and build
 
@@ -56,8 +56,17 @@ The layout assertions check the native ABI sizes and offsets.
 Host tests use substitutes when a native service is required.
 The tests do not qualify native service behavior or a head-unit installation.
 
+## USB adapter helpers
+
+DisplayLink adapters carry video through USB. The general USB interfaces do not require a DisplayLink device.
+`VENDOR_CLASS_TRIPLE`, `is_vendor_class`, `DisplayInterface` and `find_display_interface` select interfaces for these adapters.
+`find_bulk_out` accepts other endpoints but logs a warning when the endpoint number differs from the DisplayLink convention.
+Applications select the device, configuration and interface. These helpers do not apply an automatic device policy.
+
 ## License
 
 `hidkbm-ring`, `joined-worker`, `qnx-mmio`, `qnx-syslog`, `qnx-syspage` and `qnx-usbdi` use `Apache-2.0`.
+These six crates retain the Apache-2.0 terms of their source components.
 The other libraries use `MIT OR Apache-2.0`. You can choose either license for those libraries.
+Copyright 2026 qnx650-crates contributors.
 See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).

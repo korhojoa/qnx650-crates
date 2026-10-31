@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 qnx650-crates contributors.
 //! Device memory on QNX 6.5: what a driver or a diagnostic tool needs to
 //! touch a peripheral's registers or hand a physical buffer to hardware.
 //!
@@ -15,14 +16,8 @@
 //! `sys/neutrino.h`), measured with the SDP compiler (`LAYOUT.md`). They
 //! are the same on ARM and x86.
 //!
-//! Host builds (tests) get substitutes for the QNX calls that always fail
-//! and never touch memory: a host test that appears to map a peripheral is
-//! worse than one that cannot run. The substitutes are Rust functions, not
-//! C stubs: a C stub named `mmap64` or `munmap` shadows glibc for the
-//! whole test process (an earlier version did that and the test binary
-//! aborted while Rust set up a thread's signal stack).
-//!
-//! Provides typed physical addresses and mapped I/O access.
+//! Host builds use substitutes that return errors without memory access.
+//! These Rust functions do not replace host libc symbols.
 
 #![no_std]
 
@@ -244,9 +239,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 /// Ask for I/O privilege.
 ///
-/// C tools called `ThreadCtl(_NTO_TCTL_IO, 0)` and discarded the result,
-/// so a non-root run carried on to a mapping that could not work. Here it
-/// is a `Result` and cannot be ignored without saying so.
+/// The result contains an error if `ThreadCtl(_NTO_TCTL_IO, 0)` fails.
 ///
 /// # Errors
 /// Fails when the caller is not privileged; in practice, not running as

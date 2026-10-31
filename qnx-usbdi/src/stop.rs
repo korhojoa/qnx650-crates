@@ -27,10 +27,10 @@
 //! and `usbd_connect`'s wait; a signal inside one of those may still be
 //! escalated.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
-
 //! The flag itself is `qnx-stop`'s, so a program that also reads it
 //! directly sees the same stop.
+//!
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 pub use qnx_stop::{request, requested, SIGINT, SIGTERM};
 

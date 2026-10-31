@@ -15,14 +15,14 @@
 //! langid-0 form reads a cache that holds only the device descriptor
 //! here and fails with `ENOENT`; with a langid it returns a global buffer
 //! and fails on any code unit the C locale cannot encode. `string` does
-//! what libdlo's `usb_get_string_simple` does, with two `usbd_descriptor`
-//! calls, and maps every non-ASCII code unit to `?`.
+//! two USB string descriptor requests through `usbd_descriptor`.
+//! It maps each non-ASCII code unit to `?`.
 //!
 //! `Device` is `!Send`/`!Sync` (an `Rc` inside). A `BulkOut` opened on
 //! it shares the `Rc`, so the device is detached only after the last of
 //! the two is dropped, whichever order they go in.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -53,8 +53,8 @@ pub(crate) const fn descriptor_wvalue(dtype: u8, index: u8) -> u16 {
     ((dtype as u16) << 8) | (index as u16)
 }
 
-/// The device descriptor, decoded once after attach (the C clients read
-/// VID and PID from it, not from the instance's ident).
+/// The device descriptor, decoded once after attach. VID and PID come
+/// from this descriptor. The instance identifier selects the attachment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeviceDescriptor {
     /// `idVendor`.
@@ -231,6 +231,22 @@ pub struct Device {
 }
 
 impl Device {
+    /// Reset this attached device before opening any data pipes.
+    /// The configuration descriptor cache is invalidated before the call.
+    /// Select its configuration and interface again after a successful reset.
+    ///
+    /// # Errors
+    /// [`Error::Gone`] if removed, [`Error::Errno`] with `EBUSY` while a
+    /// data pipe holds this device, or the error returned by io-usb.
+    pub fn reset(&self) -> Result<()> {
+        reset_attached(
+            self.gone(),
+            Rc::strong_count(&self.shared),
+            &self.shared.config,
+            || self.shared.sys.reset(),
+        )
+    }
+
     pub(crate) fn from_shared(shared: Rc<DeviceShared>) -> Device {
         Device { shared }
     }
@@ -506,9 +522,9 @@ impl Device {
 
     /// A control transfer, host to device. With `data` empty there is no
     /// data stage and the transfer is judged by `usbd_io` alone. With
-    /// data, the status must be `CMP`; the reported length is logged,
-    /// not judged (none of the C clients judge it and what io-usb reports
-    /// for a control OUT is unmeasured).
+    /// data, the status must be `CMP`. The reported length is logged.
+    /// The length does not determine success because the io-usb length
+    /// contract for control OUT is not verified.
     ///
     /// # Errors
     /// As [`Device::control_in`].
@@ -614,6 +630,59 @@ impl Device {
     /// [`Error::Errno`] from `usbd_open_pipe` or the allocations.
     pub fn open_intr_out(&self, ep: Endpoint) -> Result<IntrOut> {
         IntrOut::open(Rc::clone(&self.shared), ep)
+    }
+}
+
+fn reset_attached(
+    gone: bool,
+    references: usize,
+    cache: &RefCell<Option<Vec<u8>>>,
+    reset: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if gone {
+        return Err(Error::Gone);
+    }
+    if references != 1 {
+        return Err(Error::Errno(crate::ffi::EBUSY));
+    }
+    *cache.borrow_mut() = None;
+    reset()
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+
+    #[test]
+    fn removed_or_shared_device_refuses_reset_without_touching_cache() {
+        for (gone, references, expected) in [
+            (true, 1, Error::Gone),
+            (false, 2, Error::Errno(crate::ffi::EBUSY)),
+            (false, 4, Error::Errno(crate::ffi::EBUSY)),
+        ] {
+            let cache = RefCell::new(Some(vec![1, 2]));
+            assert_eq!(
+                reset_attached(gone, references, &cache, || panic!("reset forbidden")),
+                Err(expected)
+            );
+            assert_eq!(*cache.borrow(), Some(vec![1, 2]));
+        }
+    }
+
+    #[test]
+    fn exclusive_reset_invalidates_cache_even_when_io_usb_refuses() {
+        for result in [Ok(()), Err(Error::Errno(5))] {
+            let cache = RefCell::new(Some(vec![1, 2]));
+            let mut calls = 0;
+            let actual = reset_attached(false, 1, &cache, || {
+                calls += 1;
+                assert!(cache.borrow().is_none());
+                result.clone()
+            });
+            assert_eq!(calls, 1);
+            assert_eq!(actual, result);
+            assert!(cache.borrow().is_none());
+        }
     }
 }
 

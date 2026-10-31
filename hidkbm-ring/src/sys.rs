@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 qnx650-crates contributors.
 //! The libc calls the `shm` feature needs besides shared memory: `open`,
 //! `read` and `poll` on the PPS objects. Shared memory (`shm_open`,
 //! `ftruncate`, `mmap`, `munmap`, `close`, `shm_unlink`) comes from
@@ -6,8 +7,7 @@
 //!
 //! The values are QNX 6.5's (`fcntl.h`, `poll.h`, `errno.h`; measured with
 //! the SDP compiler, see `LAYOUT.md`). A host build (tests) uses the Linux
-//! values. Until 0.2.0 these came from the `libc` crate, patched to the
-//! QNX 6.5 fork by each consumer; the values here are the fork's.
+//! values.
 
 #[cfg(target_os = "nto")]
 use core::ffi::c_uint;

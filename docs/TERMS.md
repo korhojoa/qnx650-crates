@@ -15,8 +15,6 @@
 - DMA means Direct Memory Access, which lets hardware transfer data without processor copying.
 - EHCI and dwcotg identify USB host-controller interfaces with different transfer behavior.
 - Cargo builds Rust packages. Clippy checks Rust code for common errors.
-
-
 - MIB2 High is a Volkswagen Group infotainment platform that uses ARM QNX.
 
 [README](../README.md)

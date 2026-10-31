@@ -6,10 +6,9 @@
 //! Three forms:
 //! - `ldr_log!` / `ldr_loge!`: prefixed with the `CLOCK_REALTIME` date and time
 //!   (1970-01-01 before GPS sync, which is itself the "not synced" signal),
-//!   as gal's loaders write;
+//!   for loader startup messages.
 //! - `slog_raw!`: the message only, for hooks that must not call
-//!   `localtime_r` (gal's reader/controller threads, the v9 lesson). slog
-//!   stamps every entry itself, so these lines still carry a time;
+//!   `localtime_r`. The slog service adds its own timestamp.
 //! - `ms_log!(tag, ...)`: `mono_ms=<since start> wall_ms=<epoch> tag: text`,
 //!   to stdout AND slog, for stand-alone programs. `mono_ms` counts from
 //!   [`ms_start`] (or the first line) on `CLOCK_MONOTONIC`, the clock Rust's

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 qnx650-crates contributors.
 //! Device mappings with RAII, and volatile MMIO access.
 //!
-//! C tools mapped a peripheral and then either forgot to unmap it on some
-//! path, or unmapped it with the wrong length. A [`DeviceMapping`] unmaps
-//! itself on drop, with the length it was created with.
+//! [`DeviceMapping`] unmaps its memory on drop with the original length.
 //!
 //! What that does and does not cover: the drop runs on every normal path
 //! (early returns, `?`, the end of a scope) and on an unwind in the

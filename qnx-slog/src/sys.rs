@@ -53,11 +53,11 @@ pub const SLOG_DEBUG2: c_int = 7;
 pub const SLOG_SEVMAXVAL: c_int = 7;
 /// Major code zero (`_SLOGC_GENL`) selects the general log category.
 pub const SLOGC_GENL: c_int = 0;
-/// _`SLOGC_PRIVATE_START`: the major-code range reserved for OEM applications
-/// (sys/slogcodes.h). A code is `major | minor << 20` (_`SLOG_SETCODE`).
+/// `_SLOGC_PRIVATE_START`: the major-code range reserved for OEM applications
+/// (sys/slogcodes.h). A code is `major | minor << 20` (`_SLOG_SETCODE`).
 pub const SLOGC_PRIVATE_START: c_int = 10000;
 
-/// _`SLOG_SETCODE(major`, minor).
+/// `_SLOG_SETCODE(major, minor)`.
 #[must_use]
 pub const fn slog_code(major: c_int, minor: c_int) -> c_int {
     major | (minor << 20)

@@ -28,14 +28,11 @@ Notes:
   not defined (the default), `nbytes` is `off64_t` and `inode` is
   `ino64_t` (lines 116-123), so the struct is 8-aligned. `uid_t` and
   `gid_t` are `_INT32`, `time_t`, `mode_t`, `nlink_t` and `dev_t` are
-  `_Uint32t` (`sys/target_nto.h` 46, 49, 121, 127, 130, 133). An earlier
-  hand copy carried the attribute as an opaque 256-byte block; the real
-  size is 88.
+  `_Uint32t` (`sys/target_nto.h` 46, 49, 121, 127, 130, 133).
+  The structure size is 88 bytes.
 - `struct _io_connect`: the flexible `path` member starts at 40. The C
   `sizeof` is 44 because the header's `__FLEXARY` gives `path[1]` plus
-  padding, so the path is at `size_of::<IoConnect>()` in Rust (40). An
-  earlier hand copy's comment said 36; its Rust struct was 40 and
-  correct.
+  padding. The Rust path starts at `size_of::<IoConnect>()` (40).
 - `resmgr_context_t` ends in the flexible `iov[]`, allocated by the
   framework with `nparts_max` entries; `ResmgrContext` names `iov[0]`.
 

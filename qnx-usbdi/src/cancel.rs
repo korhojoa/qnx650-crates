@@ -6,14 +6,13 @@
 //! executing. QNX cancellation is `pthread_exit` with no unwinding
 //! (`pthread.h` lines 254-255: `pthread_testcancel` is `if (flags ==
 //! ENABLE | PENDING) pthread_exit(PTHREAD_CANCELED)`), so no Rust
-//! destructor runs on the cancelled thread. Every callback logs, and
-//! `clock::log` holds the process-wide stderr lock across a `write(2)`,
-//! a cancellation point: a callback cancelled there leaves that lock
-//! held for ever, and the caller's very next log line (`HostSys::drop`'s
-//! own `usbd_disconnect rc` line, on the thread that called
-//! `usbd_disconnect`) blocks, so the process never exits on its own.
-//! The bulk completion callback holds the ring's `Book` mutex across its
-//! log line as well.
+//! destructor runs on the cancelled thread.
+//! On QNX, `clock::log` uses `qnx_slog::log::app_line`.
+//! That function writes to file descriptor 2 without the Rust standard-error lock,
+//! then sends the message to slog. These native calls can be cancellation points.
+//! The optional log callback can also hold application locks.
+//! USB callbacks hold queue, registry or ring locks and own `Arc` references.
+//! Cancellation must not skip their destructors or leave those locks held.
 //!
 //! So each callback runs its whole body with cancellation DISABLED
 //! (contract item 4): [`CancelGuard`] is its FIRST local, before the
@@ -35,7 +34,7 @@
 //! a non-QNX target the guard is a no-op. Nothing here logs: the guard
 //! is what makes logging in a callback safe and must not depend on it.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 #[cfg(target_os = "nto")]
 use core::ffi::c_int;

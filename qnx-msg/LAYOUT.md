@@ -36,8 +36,7 @@ for 32-bit builds, so a target build fails if a struct drifts.
 Notes:
 
 - `_msg_info` is 48 bytes, not 52: `priority` and `flags` are two
-  `_Int16t` in one word. (An earlier hand copy said 52 in a comment; its
-  Rust struct was 48 and correct.)
+  `_Int16t` in one word.
 - `union sigval` is 4 bytes on the target (an `int` or a 32-bit
   pointer), so `Pulse::value` and `Sigevent::value` are `c_int`.
 - The second union of `struct sigevent` is the `short` pair

@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Link `libusbdi.so.2` on the QNX target only.
 //!
-//! The io-usb client library ships with the SDP; inside the build
-//! container the SDP sits at `/opt/qnx650` (the `qsaplay` crate links
-//! `libasound` the same way). On the host nothing is linked: the crate
-//! compiles to stubs there (see `src/lib.rs`), so the host gate can lint
-//! and test it without a QNX toolchain.
+//! The public compiler image supplies the target library in
+//! `/opt/qnx650/target/qnx6/armle-v7/lib`.
+//! This build script links it only for QNX targets.
+//! Host builds use the unsupported-operation types in `src/sys/host.rs`.
 //!
-//! Copyright 2026. Licensed under the Apache License, Version 2.0.
+//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

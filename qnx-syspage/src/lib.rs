@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 qnx650-crates contributors.
 //! The QNX 6.5 system page, read safely.
 //!
 //! The kernel maps the system page read-only into every process before
@@ -22,8 +23,6 @@
 //!
 //! Host builds have no system page: [`Syspage::get`] is `None` there, and
 //! tests build a page in memory with [`Syspage::from_bytes`].
-//!
-//! Reads CPU identification and memory ranges from the system page.
 
 #![no_std]
 
@@ -85,7 +84,11 @@ impl AsInfo<'_> {
     /// Bytes in the range (`end - start + 1`, saturating).
     #[must_use]
     pub fn len(&self) -> u64 {
-        self.end.saturating_sub(self.start).saturating_add(1)
+        if self.is_empty() {
+            0
+        } else {
+            (self.end - self.start).saturating_add(1)
+        }
     }
 
     /// True for an inverted range (`end < start`), which holds no byte.
@@ -261,6 +264,29 @@ pub fn cpu0_id() -> Option<u32> {
 mod tests {
     use super::*;
     use layout::SYSPAGE_TOTAL_SIZE;
+
+    #[test]
+    fn inclusive_range_lengths_include_empty_and_overflow() {
+        for (start, end, length) in [(8, 7, 0), (7, 7, 1), (7, 8, 2), (0, u64::MAX, u64::MAX)] {
+            let range = AsInfo {
+                start,
+                end,
+                owner: 0,
+                name: None,
+                attr: 0,
+                priority: 0,
+            };
+            assert_eq!(range.len(), length);
+            assert_eq!(range.is_empty(), length == 0);
+        }
+        let mut bytes = page();
+        bytes[320..328].copy_from_slice(&1u64.to_ne_bytes());
+        bytes[328..336].copy_from_slice(&0u64.to_ne_bytes());
+        assert_eq!(
+            Syspage::from_bytes(&bytes).unwrap().total_ram_bytes(),
+            Some(0x10_0000)
+        );
+    }
 
     /// A page laid out like the kernel's: header, then strings, cpuinfo
     /// and asinfo sections.
