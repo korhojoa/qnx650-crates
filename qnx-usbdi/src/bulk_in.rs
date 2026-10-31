@@ -31,7 +31,7 @@
 //! reference to `BulkInState` and the teardown above is unchanged
 //! (`RingWait` has the argument).
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use core::ffi::c_void;
 use core::fmt;

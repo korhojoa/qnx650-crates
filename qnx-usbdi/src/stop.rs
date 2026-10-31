@@ -30,7 +30,7 @@
 //! The flag itself is `qnx-stop`'s, so a program that also reads it
 //! directly sees the same stop.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 pub use qnx_stop::{request, requested, SIGINT, SIGTERM};
 

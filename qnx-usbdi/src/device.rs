@@ -22,7 +22,7 @@
 //! it shares the `Rc`, so the device is detached only after the last of
 //! the two is dropped, whichever order they go in.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use std::cell::RefCell;
 use std::rc::Rc;

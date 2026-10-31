@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 qnx650-crates contributors.
+// Copyright 2026 korhojoa.
 //! Joinable workers with an explicit wake path, and C-callback containment.
 //!
 //! Nothing here is QNX-specific except the log line of a late join, which

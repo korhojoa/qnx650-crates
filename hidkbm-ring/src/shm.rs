@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 qnx650-crates contributors.
+// Copyright 2026 korhojoa.
 //! The shared-memory side (feature `shm`, the default): [`Producer`] maps
 //! and fills a ring, [`Reader`] maps and drains one, and [`wait_any`] sleeps
 //! on the rings' PPS objects. These need libc (`shm_open` and `mmap`

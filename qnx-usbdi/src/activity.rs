@@ -17,7 +17,7 @@
 //! the wait looks at it every [`crate::bulk::STOP_SLICE_MS`], as every
 //! interruptible wait of this crate does.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};

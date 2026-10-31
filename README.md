@@ -68,5 +68,5 @@ Applications select the device, configuration and interface. These helpers do no
 `hidkbm-ring`, `joined-worker`, `qnx-mmio`, `qnx-syslog`, `qnx-syspage` and `qnx-usbdi` use `Apache-2.0`.
 These six crates retain the Apache-2.0 terms of their source components.
 The other libraries use `MIT OR Apache-2.0`. You can choose either license for those libraries.
-Copyright 2026 qnx650-crates contributors.
+Copyright 2026 korhojoa.
 See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).

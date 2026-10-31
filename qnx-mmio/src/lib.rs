@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 qnx650-crates contributors.
+// Copyright 2026 korhojoa.
 //! Device memory on QNX 6.5: what a driver or a diagnostic tool needs to
 //! touch a peripheral's registers or hand a physical buffer to hardware.
 //!

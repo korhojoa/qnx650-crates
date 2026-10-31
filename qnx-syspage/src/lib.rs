@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 qnx650-crates contributors.
+// Copyright 2026 korhojoa.
 //! The QNX 6.5 system page, read safely.
 //!
 //! The kernel maps the system page read-only into every process before

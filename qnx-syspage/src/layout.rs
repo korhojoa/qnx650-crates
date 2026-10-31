@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 qnx650-crates contributors.
+// Copyright 2026 korhojoa.
 //! Offsets and sizes of `sys/syspage.h` (SDP 6.5.0), measured with the
 //! SDP compiler for ARM (`LAYOUT.md`). All fields are fixed-width
 //! (`_Uint16t`, `_Uint32t`, `_Uint64t`); the one pointer, `asinfo_entry`'s

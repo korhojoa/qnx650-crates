@@ -66,7 +66,7 @@
 //! choice, first-failure capture, the `CMP`-and-length judgement, the
 //! statistics. The URBs themselves exist only on the target.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use core::ffi::c_void;
 use core::mem::ManuallyDrop;

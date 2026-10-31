@@ -27,7 +27,7 @@
 //! build has no `libusbdi` to link, and the safe layer above compiles to
 //! `Error::Unsupported` there (`sys/host.rs`).
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use core::ffi::{c_char, c_int, c_void};
 use core::marker::{PhantomData, PhantomPinned};

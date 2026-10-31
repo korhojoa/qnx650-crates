@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 qnx650-crates contributors.
+// Copyright 2026 korhojoa.
 //! HID event rings for USB, Bluetooth, gamepads and touch input.
 //! Each producer uses one shared-memory object with this 2064-byte layout:
 //!

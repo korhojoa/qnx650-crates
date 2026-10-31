@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 qnx650-crates contributors.
+// Copyright 2026 korhojoa.
 //! Log lines of a stand-alone QNX 6.5 executable: each line goes to the
 //! system log through `syslog()` and to stderr with a `[ssss.mmm]` stamp.
 //!

@@ -20,7 +20,7 @@
 //! again. If abort fails, the pipe refuses later writes and resets.
 //! Teardown keeps the slot until the pipe closes.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use core::mem::ManuallyDrop;
 use std::rc::Rc;

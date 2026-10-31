@@ -16,7 +16,7 @@
 //! Unit tests select a separate backend to exercise the public transfer
 //! methods. Those synthetic completions do not qualify native USB behavior.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 /// One control transfer's setup packet, without the direction bit:
 /// io-usb derives `bmRequestType` bit 7 from the URB flags

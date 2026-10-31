@@ -17,7 +17,7 @@
 //! non-zero, which they stay until the event thread has come back from
 //! the last callback; both are therefore retried on `EBUSY`, bounded.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use core::ffi::{c_int, c_void};
 use core::ptr;

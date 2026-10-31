@@ -19,7 +19,7 @@
 //! `read` only after its completion was popped and before it is re-armed,
 //! so the two never overlap.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use core::ffi::c_void;
 use core::mem::ManuallyDrop;

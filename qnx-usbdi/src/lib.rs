@@ -32,7 +32,7 @@
 //! callbacks io-usb invokes carry no user pointer, so the event queue is
 //! a process-global.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use core::fmt;
 

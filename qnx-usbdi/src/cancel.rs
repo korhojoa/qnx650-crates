@@ -34,7 +34,7 @@
 //! a non-QNX target the guard is a no-op. Nothing here logs: the guard
 //! is what makes logging in a callback safe and must not depend on it.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 #[cfg(target_os = "nto")]
 use core::ffi::c_int;

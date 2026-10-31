@@ -6,7 +6,7 @@
 //! `urb_status`, a free function the completion callback calls, which
 //! is unreachable because no `SlotSys` exists to submit a URB.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use core::ffi::c_void;
 

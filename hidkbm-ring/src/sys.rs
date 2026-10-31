@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 qnx650-crates contributors.
+// Copyright 2026 korhojoa.
 //! The libc calls the `shm` feature needs besides shared memory: `open`,
 //! `read` and `poll` on the PPS objects. Shared memory (`shm_open`,
 //! `ftruncate`, `mmap`, `munmap`, `close`, `shm_unlink`) comes from

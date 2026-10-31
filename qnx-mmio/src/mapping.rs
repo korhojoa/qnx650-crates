@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 qnx650-crates contributors.
+// Copyright 2026 korhojoa.
 //! Device mappings with RAII, and volatile MMIO access.
 //!
 //! [`DeviceMapping`] unmaps its memory on drop with the original length.

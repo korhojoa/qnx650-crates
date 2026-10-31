@@ -21,7 +21,7 @@
 //! and `usbd_detach` until its event thread, back from the last
 //! completion callback, has decremented its own counters.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use core::fmt;
 #[cfg(not(target_os = "nto"))]

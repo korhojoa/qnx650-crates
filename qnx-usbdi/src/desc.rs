@@ -19,7 +19,7 @@
 //!
 //! The descriptor parser and its fixtures run on the host without a device.
 //!
-//! Copyright 2026 qnx650-crates contributors. Licensed under Apache-2.0.
+//! Copyright 2026 korhojoa. Licensed under Apache-2.0.
 
 use crate::ffi::{
     UsbdEndpointDescriptor, USB_ATTRIB_BULK, USB_ATTRIB_INTERRUPT, USB_ATTRIB_TYPE_MASK,
