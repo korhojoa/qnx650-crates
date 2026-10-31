@@ -45,8 +45,8 @@ one pointer (`alloc_checker`) is 32 bits on both QNX 6.5 targets.
 
 - `cpuinfo_entry.name` and `asinfo_entry.name` are offsets into the
   `strings` section (not `typed_strings`).
-- The libc fork that qnx-apps `rustfetch` reads the page through names
-  the 6.5 fields `old_asinfo` and `old_cpuinfo`; they are the header's
+- The QNX libc bindings name the 6.5 fields `old_asinfo` and
+  `old_cpuinfo`; they are the header's
   `asinfo` (12) and `cpuinfo` (24).
 - `_syspage_ptr` is a data symbol of `libc.so.3` (checked with `nm -D`
   on the SDP's `armle-v7/lib/libc.so.3`). The header's

@@ -39,6 +39,16 @@ use crate::{Error, Result};
 
 static T0: OnceLock<Instant> = OnceLock::new();
 static LEVEL: AtomicU8 = AtomicU8::new(0);
+static LOG_SINK: OnceLock<fn(&str)> = OnceLock::new();
+
+/// Send each stamped line to an optional process logging function.
+/// Set the function before USB workers start. It must not call this logger.
+///
+/// # Errors
+/// Returns the supplied function if a sink is already set.
+pub fn set_log_sink(sink: fn(&str)) -> core::result::Result<(), fn(&str)> {
+    LOG_SINK.set(sink)
+}
 
 /// Bound on the wait for libusbdi's own in-flight accounting to catch
 /// up with a drained ring. The per-pipe and per-device counters are
@@ -123,8 +133,14 @@ pub fn format_stamp(ms: u64) -> String {
 /// Write one stamped line to stderr. A closed stderr is not a reason to
 /// panic inside a USB completion callback, so the write error is dropped.
 pub fn log(args: fmt::Arguments<'_>) {
-    let mut err = std::io::stderr().lock();
-    let _ = writeln!(err, "{} {args}", stamp());
+    let line = format!("{} {args}", stamp());
+    {
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "{line}");
+    }
+    if let Some(sink) = LOG_SINK.get() {
+        sink(&line);
+    }
 }
 
 /// Set the verbosity level: 0 prints state changes and failures, 1 and
@@ -168,6 +184,22 @@ macro_rules! vlog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_sink_receives_exact_stamped_line_and_cannot_be_replaced() {
+        static RECORDS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        fn capture(line: &str) {
+            RECORDS.lock().unwrap().push(line.to_owned());
+        }
+        assert!(set_log_sink(capture).is_ok());
+        log(format_args!("owned callback marker"));
+        assert!(RECORDS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| { line.starts_with('[') && line.ends_with("] owned callback marker") }));
+        assert!(set_log_sink(capture).is_err());
+    }
 
     #[test]
     fn stamp_format_is_seconds_dot_millis() {
